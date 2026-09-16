@@ -1,0 +1,25 @@
+# Allow-list: this folder also holds raw survey data, DB dumps and county
+# exports (some with respondent PII). Only the dashboard code is tracked.
+*
+!/.gitignore
+!/.gitattributes
+!/.dockerignore
+!/.env.example
+!/Dockerfile
+!/docker-compose.yml
+!/requirements.txt
+!/README.md
+!/dashboard.py
+!/dashboard.html
+!/build_qc.py
+!/export_qc.py
+!/target_counties.txt
+!/deploy/
+!/deploy/restore_db.sh
+
+# never, even if un-ignored above by mistake
+.env
+qgis_access.txt
+*.dump
+*.jsonl
+__pycache__/

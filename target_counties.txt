@@ -1,0 +1,37 @@
+# Coffee counties to KEEP (one per line, shapefile spelling; matching is
+# case-insensitive and hyphens/spaces are interchangeable).
+# Points whose GIS county is not in this list get the flag outside_target_county.
+# Re-apply with:  python build_qc.py --flags
+Nairobi
+Kiambu
+Muranga
+Kajiado
+Baringo
+Kericho
+Kisumu
+Bomet
+Bungoma
+Busia
+Elgeyo Marakwet
+Embu
+Kakamega
+Kirinyaga
+Kisii
+Machakos
+Meru
+Migori
+Nakuru
+Nandi
+Narok
+Nyamira
+Nyeri
+Siaya
+Taita Taveta
+Tharaka Nithi
+Trans Nzoia
+Uasin Gishu
+Vihiga
+West Pokot
+Homa Bay
+Laikipia
+Makueni

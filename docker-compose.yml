@@ -1,0 +1,49 @@
+# Coffee QC dashboard + PostGIS.
+#
+#   cp .env.example .env   # fill in POSTGRES_PASSWORD, CARTO_KEY, MAPTILER_KEY
+#   docker compose up -d --build
+#   open http://<server>:5055
+#
+# The `db` service reuses the `coffee_pgdata` volume, so a database restored
+# with deploy/restore_db.sh into a container using that volume is picked up
+# as-is. If a container named coffee-pg already exists, `docker rm -f coffee-pg`
+# first (the data lives in the volume, not the container).
+
+services:
+  db:
+    image: postgis/postgis:17-3.6-alpine
+    container_name: coffee-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "${PG_HOST_PORT:-5432}:5432"
+    volumes:
+      - coffee_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d coffee_eudr"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  dashboard:
+    build: .
+    container_name: coffee-dashboard
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: coffee_eudr
+      CARTO_KEY: ${CARTO_KEY:-}
+      MAPTILER_KEY: ${MAPTILER_KEY:-}
+    ports:
+      - "${DASH_HOST_PORT:-5055}:5055"
+
+volumes:
+  coffee_pgdata:
+    name: coffee_pgdata

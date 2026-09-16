@@ -1,0 +1,10 @@
+# Keep the image to the dashboard only -- the project folder holds ~6 GB of
+# survey data, dumps and county exports that must never end up in a layer.
+*
+!Dockerfile
+!requirements.txt
+!dashboard.py
+!dashboard.html
+!build_qc.py
+!export_qc.py
+!target_counties.txt

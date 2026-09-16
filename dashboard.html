@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coffee Farm Points QC</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.min.js"></script>
+<script src="https://unpkg.com/leaflet.vectorgrid@1.3.0/dist/Leaflet.VectorGrid.bundled.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb; --plane: #f9f9f7; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --border: rgba(11,11,11,.10);
+    --c-clean: #2a78d6;      /* slot 1 blue    */
+    --c-county: #eb6834;     /* slot 2 orange  */
+    --c-road: #4a3aa7;       /* slot 7 violet  */
+    --c-trees-high: #eda100; /* slot 4 yellow  */
+    --c-trees-zero: #1baf7a; /* slot 3 aqua    */
+    --c-cluster: #e34948;    /* slot 8 red     */
+    --c-dup: #e87ba4;        /* slot 5 magenta */
+    --c-area: #008300;       /* slot 6 green   */
+    --seq-1:#cde2fb; --seq-2:#9ec5f4; --seq-3:#6da7ec; --seq-4:#3987e5; --seq-5:#256abf; --seq-6:#184f95; --seq-7:#0d366b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--plane); display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--ink-2); font-size: 12px; }
+  #live { margin-left: auto; font-size: 12px; color: var(--ink-2); display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  #live i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  #live.on i { background: #0ca30c; box-shadow: 0 0 0 3px rgba(12,163,12,.2); }
+  #live.busy i { background: #fab219; }
+  #toast { position: fixed; top: 52px; right: 16px; z-index: 1000; background: var(--ink); color: #fff; padding: 8px 12px; border-radius: 6px; font-size: 12px; opacity: 0; transition: opacity .3s; pointer-events: none; }
+  #toast.show { opacity: .92; }
+  #layout { flex: 1; display: flex; min-height: 0; }
+  aside { width: 380px; flex: none; overflow-y: auto; background: var(--surface); border-right: 1px solid var(--border); padding: 12px 16px 24px; }
+  #map { flex: 1; min-width: 0; }
+  h2 { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 18px 0 8px; font-weight: 600; }
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .tile { background: var(--plane); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+  .tile .v { font-size: 20px; font-weight: 600; line-height: 1.1; }
+  .tile .l { color: var(--ink-2); font-size: 11px; margin-top: 2px; }
+  .bars { display: grid; grid-template-columns: max-content 1fr max-content; gap: 4px 8px; align-items: center; font-variant-numeric: tabular-nums; }
+  .bars .lab { color: var(--ink-2); font-size: 12px; white-space: nowrap; }
+  .bars .bar { height: 10px; background: var(--grid); border-radius: 0 4px 4px 0; position: relative; }
+  .bars .bar i { display: block; height: 100%; border-radius: 0 4px 4px 0; background: var(--c-clean); min-width: 1px; }
+  .bars .n { font-size: 12px; text-align: right; }
+  .bars .lab.click { cursor: pointer; }
+  .bars .lab.click:hover, .bars .lab.on { color: var(--ink); font-weight: 600; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  th { text-align: right; font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--grid); padding: 3px 4px; }
+  th:first-child, td:first-child { text-align: left; }
+  td { text-align: right; padding: 3px 4px; border-bottom: 1px solid var(--grid); }
+  tr.click { cursor: pointer; } tr.click:hover td { background: var(--plane); }
+  tr.dim td:first-child { color: var(--muted); }
+  .crit { display: grid; grid-template-columns: 1fr max-content; gap: 3px 12px; font-size: 12px; }
+  .crit .k { color: var(--ink-2); } .crit .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .note { font-size: 12px; color: var(--ink-2); margin: 6px 0; }
+  code { font-size: 11px; background: var(--plane); padding: 1px 4px; border-radius: 3px; }
+  /* map controls */
+  .panel { position: absolute; z-index: 800; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; box-shadow: 0 1px 4px rgba(0,0,0,.08); font-size: 12px; }
+  #filters { top: 10px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; align-items: center; white-space: nowrap; }
+  #filters label { display: flex; gap: 4px; align-items: center; color: var(--ink-2); }
+  select { font: inherit; font-size: 12px; padding: 2px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--ink); }
+  #legend { bottom: 24px; right: 10px; min-width: 190px; max-height: calc(100% - 120px); overflow-y: auto; }
+  #legend.collapsed > *:not(.lg-head) { display: none; }
+  .lg-head { display: flex; justify-content: space-between; cursor: pointer; font-weight: 600; margin-bottom: 4px; }
+  #legend .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+  #legend .ramp { display: flex; height: 10px; margin: 4px 0 2px; border-radius: 2px; overflow: hidden; }
+  #legend .ramp i { flex: 1; }
+  #legend .rl { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; }
+  #legend label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  #zoomhint { top: 10px; right: 10px; color: var(--ink-2); }
+  .leaflet-popup-content { font: 12px/1.4 system-ui, sans-serif; margin: 10px 12px; }
+  .leaflet-popup-content dl { display: grid; grid-template-columns: max-content 1fr; gap: 1px 10px; margin: 0; }
+  .leaflet-popup-content dt { color: var(--muted); } .leaflet-popup-content dd { margin: 0; }
+  .flagpill { display: inline-block; padding: 0 6px; border-radius: 10px; color: #fff; font-size: 11px; margin: 1px 2px 1px 0; }
+  .hist { display: grid; grid-template-columns: max-content 1fr max-content; gap: 3px 8px; align-items: center; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .hist .bar { height: 8px; background: var(--grid); border-radius: 0 4px 4px 0; }
+  .hist .bar i { display: block; height: 100%; background: var(--c-clean); border-radius: 0 4px 4px 0; min-width: 1px; }
+  .hist .bar i.warn { background: var(--c-cluster); }
+  .hist .lab { color: var(--ink-2); white-space: nowrap; }
+  .hist .n { text-align: right; }
+  @media (max-width: 900px) {
+    #layout { flex-direction: column; overflow-y: auto; }  aside { order: 2; }  #map { order: 1; }
+    #map { flex: none; height: 60vh; min-height: 360px; }
+    aside { width: auto; border-right: 0; border-top: 1px solid var(--border); overflow: visible; }
+    header h1 { font-size: 14px; }
+    #filters { left: 10px; transform: none; flex-wrap: wrap; white-space: normal; max-width: calc(100% - 20px); }
+    #zoomhint { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Coffee farm points — QC review</h1>
+  <span class="sub" id="hdr">loading…</span>
+  <span id="live" title="Live updates from the database (LISTEN/NOTIFY)"><i></i><span id="livetxt">connecting…</span></span>
+</header>
+<div id="toast"></div>
+<div id="layout">
+  <aside>
+    <div class="tiles">
+      <div class="tile"><div class="v" id="t-total">–</div><div class="l">points with coordinates</div></div>
+      <div class="tile"><div class="v" id="t-clean" style="color:var(--c-clean)">–</div><div class="l">clean</div></div>
+      <div class="tile"><div class="v" id="t-removed" style="color:var(--c-cluster)">–</div><div class="l">flagged (removed)</div></div>
+    </div>
+    <div class="note" id="srcnote"></div>
+
+    <h2>Digitising progress</h2>
+    <div class="tiles" id="prog-tiles"></div>
+    <div class="note" id="prog-note"></div>
+    <div class="hist" id="prog-days"></div>
+    <table id="prog-who" style="margin-top:8px"><thead><tr><th>editor</th><th>polygons</th><th>ha</th><th>last save</th></tr></thead><tbody></tbody></table>
+    <table id="prog-county" style="margin-top:8px"><thead><tr><th>county</th><th>clean pts</th><th>covered</th><th>%</th></tr></thead><tbody></tbody></table>
+
+    <h2>Flags — click to filter map</h2>
+    <div class="bars" id="flagbars"></div>
+    <div class="note">A point can carry several flags; it is "removed" if it carries at least one.</div>
+    <h2>Warnings — recorded, not removed</h2>
+    <div class="bars" id="warnbars"></div>
+
+    <h2>Current criteria (build_qc.py)</h2>
+    <div class="crit" id="crit"></div>
+
+    <h2>Trees per farm — distribution</h2>
+    <div class="hist" id="h-trees"></div>
+    <h2>Implied farm area (trees ÷ KPCU density)</h2>
+    <div class="hist" id="h-area"></div>
+    <div class="note">Society growers; estates in brackets — both are subject to the 4 ha rule. Ruiru 11 = 2,500/ha, Batian = 1,905/ha, SL28/SL34/K7 = 1,330/ha.</div>
+    <h2>Distance to nearest OSM road</h2>
+    <div class="hist" id="h-road"></div>
+    <h2>DBSCAN cluster size (10 m radius)</h2>
+    <div class="hist" id="h-cluster"></div>
+
+    <h2>Counties (GIS boundary) — click to zoom</h2>
+    <table id="ctab"><thead><tr><th data-k="county">county</th><th data-k="n">points</th><th data-k="clean">clean</th><th data-k="removed">removed</th><th data-k="pct">% removed</th><th data-k="mismatch">form≠GIS</th></tr></thead><tbody></tbody></table>
+    <div class="note">Click a column header to sort (default: % removed, dirtiest first). Greyed counties are outside the target list. "form≠GIS": the county entered on the form differs from the boundary the point falls in.</div>
+
+    <h2>Largest clusters — click to zoom</h2>
+    <table id="cltab"><thead><tr><th>county</th><th>points</th><th>enum.</th><th>factory</th></tr></thead><tbody></tbody></table>
+  </aside>
+  <div id="map"></div>
+</div>
+
+<script>
+const FLAG_COLOR = {
+  clean: getCSS('--c-clean'), outside_kenya: getCSS('--c-county'), outside_target_county: getCSS('--c-county'),
+  on_road: getCSS('--c-road'), trees_high: getCSS('--c-trees-high'), trees_zero: getCSS('--c-trees-zero'), over_4ha: getCSS('--c-area'),
+  dense_cluster: getCSS('--c-cluster'), dup_coord: getCSS('--c-dup') };
+const FLAG_LABEL = { clean:'clean', outside_kenya:'outside Kenya', outside_target_county:'outside target county',
+  on_road:'on road (≤ buffer)', trees_high:'trees absurd (>100k)', trees_zero:'trees zero / blank', over_4ha:'over 4 ha',
+  dense_cluster:'dense cluster', dup_coord:'duplicate coordinate', trees_mismatch:'trees total ≠ variety sum' };
+const SEQ = ['--seq-1','--seq-2','--seq-3','--seq-4','--seq-5','--seq-6','--seq-7'].map(getCSS);
+const HEX_BREAKS = [1, 5, 15, 40, 100, 250, 600];   // points per 1 km hex
+function getCSS(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+const fmt = n => n == null ? '–' : Number(n).toLocaleString('en');
+
+// ------------------------------------------------------------------ map
+// VectorGrid point symbolizers carry no _latlng, which crashes Leaflet's default
+// canvas click dispatch; resolve the latlng from the mouse event instead.
+L.Canvas.Tile.prototype._onClick = function (e) {
+  const point = this._map.mouseEventToLayerPoint(e).subtract(this.getOffset());
+  let hit = null;
+  for (const id in this._layers) {
+    const l = this._layers[id];
+    if (l.options.interactive && l._containsPoint(point) && !this._map._draggableMoved(l)) hit = l;
+  }
+  if (hit) { L.DomEvent.stop(e); hit.fire('click', { latlng: this._map.mouseEventToLatLng(e), layer: hit, originalEvent: e }, true); }
+};
+
+const map = L.map('map', { preferCanvas: true }).setView([-0.4, 36.4], 7);
+map.createPane('hex').style.zIndex = 420;      // above county outlines (400)
+map.createPane('points').style.zIndex = 450;   // above hexes, below markers/popups
+let base;
+async function addBasemap(){
+  const cfg = await (await fetch('/api/config')).json();
+  base = cfg.carto_key
+    ? L.tileLayer('https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=' + cfg.carto_key, { attribution: '© OpenStreetMap © CARTO', maxZoom: 20 })
+    : L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap contributors', maxZoom: 19 });
+  base.addTo(map); base.bringToBack();
+  sat = cfg.maptiler_key
+    ? L.tileLayer('https://api.maptiler.com/maps/hybrid-v4/{z}/{x}/{y}.jpg?key=' + cfg.maptiler_key, { attribution: '© MapTiler © OpenStreetMap contributors', tileSize: 512, zoomOffset: -1, maxZoom: 22 })
+    : L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Esri World Imagery', maxZoom: 19 });
+}
+let sat;   // MapTiler Hybrid when a key is configured, else Esri imagery
+
+const filters = { status: 'all', flag: '', county: '', digitised: '' };
+function qs(){ const p = new URLSearchParams(); for (const k in filters) if (filters[k]) p.set(k, filters[k]); return p.toString(); }
+
+let countiesLayer, pointsLayer, hexLayer, heatLayer, polyLayer;
+
+function hexColor(v){ let i = 0; while (i < HEX_BREAKS.length - 1 && v >= HEX_BREAKS[i + 1]) i++; return SEQ[i]; }
+
+function makePoints(){
+  const layer = L.vectorGrid.protobuf('/tiles/points/{z}/{x}/{y}.pbf?' + qs(), {
+    minZoom: 9, maxZoom: 20, interactive: true, rendererFactory: L.canvas.tile, pane: 'points',
+    getFeatureId: f => f.properties.kobo_id,
+    vectorTileLayerStyles: { points: (p, z) => ({
+      radius: z >= 14 ? 5 : z >= 12 ? 3.5 : 2.5,
+      fill: true, fillColor: FLAG_COLOR[p.flag || 'clean'], fillOpacity: p.status === 'clean' ? 0.75 : 0.9,
+      color: p.covered ? '#7a4b1e' : '#fff', weight: p.covered ? 2 : (z >= 13 ? 1 : 0), stroke: p.covered || z >= 13 }) }
+  });
+  layer.on('click', e => showPoint(e.layer.properties.kobo_id, e.latlng));
+  return layer;
+}
+function makeHex(metric){
+  return L.vectorGrid.protobuf('/tiles/hex/{z}/{x}/{y}.pbf?metric=' + metric, {
+    maxZoom: 20, interactive: true, rendererFactory: L.canvas.tile, pane: 'hex',
+    vectorTileLayerStyles: { hex: p => ({ fill: true, fillColor: hexColor(p.v), fillOpacity: 0.7, weight: 0.4, color: '#fff' }) }
+  }).bindTooltip(() => '', { sticky: true })
+    .on('mouseover', e => e.target.setTooltipContent(`${fmt(e.layer.properties.v)} points in this 1 km hex<br>${fmt(e.layer.properties.n_clean)} clean · ${fmt(e.layer.properties.n_removed)} removed`));
+}
+async function makeHeat(metric){
+  const pts = await (await fetch('/api/heat?metric=' + metric)).json();
+  const max = pts.reduce((m, p) => Math.max(m, p[2]), 1);
+  return L.heatLayer(pts.map(p => [p[0], p[1], Math.log1p(p[2]) / Math.log1p(max)]),
+    { radius: 18, blur: 20, minOpacity: 0.25, max: 1,
+      gradient: { 0.2: SEQ[0], 0.4: SEQ[2], 0.6: SEQ[4], 0.8: SEQ[5], 1: SEQ[6] } });
+}
+
+function rebuildPoints(){
+  if (pointsLayer) map.removeLayer(pointsLayer);
+  pointsLayer = makePoints();
+  if (document.getElementById('L-points').checked) pointsLayer.addTo(map);
+}
+
+async function showPoint(id, latlng){
+  const p = await (await fetch('/api/point/' + id)).json();
+  const pills = (p.flags && p.flags.length ? p.flags : ['clean'])
+    .map(f => `<span class="flagpill" style="background:${FLAG_COLOR[f]}">${FLAG_LABEL[f]}</span>`).join('')
+    + (p.warnings || []).map(f => `<span class="flagpill" style="background:var(--muted)">⚠ ${FLAG_LABEL[f] || f}</span>`).join('');
+  const rows = [['kobo id', p.kobo_id], ['grower', `${p.grower_type || ''} · ${p.grower_name || ''}`],
+    ['factory / estate', p.factory_name || p.estate_name || '–'], ['county (form)', p.county_form],
+    ['county (GIS)', p.county_gis || '– outside Kenya'], ['sub-county / ward', `${p.subcounty || ''} / ${p.ward || ''}`],
+    ['trees (total question)', fmt(p.trees_total)], ['trees (variety sum)', p.trees_breakdown_sum ? fmt(p.trees_breakdown_sum) : '– not given'], ['implied area', p.implied_ha != null ? `${p.implied_ha} ha @ ${fmt(p.density_used)}/ha (${p.area_basis})` : '–'], ['parcels', p.parcel_number], ['nearest road', `${p.dist_road_m} m (${p.road_type || '?'}${p.road_name ? ', ' + p.road_name : ''})`],
+    ['cluster', p.cluster_size ? `#${p.cluster_id} — ${p.cluster_size} points within 10 m chain` : 'none'],
+    ['same coordinate', p.dup_group_size > 1 ? `${p.dup_group_size} records` : 'unique'],
+    ['neighbours ≤ 50 m', p.nbrs_50m],
+    ['digitised polygon', p.polygon_gid ? `#${p.polygon_gid} (${p.digitised_at})` : 'not yet'],
+    ['respondent', `${p.respondent_name || '–'}${p.respondent_gender ? ' · ' + p.respondent_gender : ''}${p.respondent_phone ? ' · ' + p.respondent_phone : ''}`],
+    ['interviewer', `${p.interviewer_name || '–'}${p.interviewer_id ? ' (' + p.interviewer_id + ')' : ''}${p.interviewer_phone ? ' · ' + p.interviewer_phone : ''}`],
+    ['kobo account', p.submitted_by], ['submitted', p.submission_time], ['comments', p.comments || '–'],
+    ['lat, lon', `${p.latitude}, ${p.longitude}`]];
+  L.popup({ maxWidth: 360 }).setLatLng(latlng)
+    .setContent(`<div style="margin-bottom:6px">${pills}</div><dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v ?? '–'}</dd>`).join('')}</dl>`)
+    .openOn(map);
+}
+
+// ------------------------------------------------------------------ controls
+const filtersEl = L.DomUtil.create('div', 'panel', map.getContainer()); filtersEl.id = 'filters';
+filtersEl.innerHTML = `
+  <label>status <select id="f-status"><option value="all">all</option><option value="clean">clean</option><option value="removed">removed</option></select></label>
+  <label>flag <select id="f-flag"><option value="">any</option>${Object.keys(FLAG_COLOR).filter(f => f !== 'clean').map(f => `<option value="${f}">${FLAG_LABEL[f]}</option>`).join('')}</select></label>
+  <label>county <select id="f-county"><option value="">all</option></select></label>
+  <label>polygon <select id="f-dig"><option value="">any</option><option value="yes">digitised</option><option value="no">not yet</option></select></label>
+`;
+L.DomEvent.disableClickPropagation(filtersEl); L.DomEvent.disableScrollPropagation(filtersEl);
+filtersEl.querySelector('#f-status').onchange = e => { filters.status = e.target.value; rebuildPoints(); };
+filtersEl.querySelector('#f-flag').onchange = e => { filters.flag = e.target.value; syncFlagBars(); rebuildPoints(); };
+filtersEl.querySelector('#f-county').onchange = e => { filters.county = e.target.value; rebuildPoints(); };
+filtersEl.querySelector('#f-dig').onchange = e => { filters.digitised = e.target.value; rebuildPoints(); };
+
+
+const legendEl = L.DomUtil.create('div', 'panel', map.getContainer()); legendEl.id = 'legend';
+legendEl.innerHTML = `
+  <div class="lg-head" onclick="this.parentNode.classList.toggle('collapsed')"><span>Layers</span><span>▾</span></div>
+  <div class="row" style="margin-bottom:6px"><b>Basemap</b>
+    <label style="margin-left:6px"><input type="radio" name="bm" value="streets" checked> streets</label>
+    <label><input type="radio" name="bm" value="sat"> satellite</label></div>
+  <label><input type="checkbox" id="L-points" checked> <b>Points</b> <span style="color:var(--muted)">(zoom ≥ 9)</span></label>
+  ${Object.keys(FLAG_COLOR).map(f => `<div class="row"><span class="sw" style="background:${FLAG_COLOR[f]}"></span>${FLAG_LABEL[f]}</div>`).join('')}
+  <label style="margin-top:8px"><input type="checkbox" id="L-hex" checked> <b>Density hexes</b> (1 km)</label>
+  <div class="ramp">${SEQ.map(c => `<i style="background:${c}"></i>`).join('')}</div>
+  <div class="rl"><span>${HEX_BREAKS[0]}</span><span>${HEX_BREAKS[3]}</span><span>${HEX_BREAKS[6]}+</span></div>
+  <label style="margin-top:6px"><input type="checkbox" id="L-heat"> <b>Heatmap</b> <select id="heat-metric"><option value="n_all">all points</option><option value="n_removed">removed</option><option value="n_cluster">dense clusters</option><option value="n_clean">clean</option></select></label>
+  <label style="margin-top:6px"><input type="checkbox" id="L-counties" checked> <b>County boundaries</b></label>
+  <label style="margin-top:6px"><input type="checkbox" id="L-polys" checked> <b>Digitised polygons</b> <span id="polycount" style="color:var(--muted)"></span></label>
+  <div class="row" style="color:var(--muted)"><span class="sw" style="background:var(--c-clean);box-shadow:0 0 0 2px #7a4b1e"></span>point with a polygon (brown ring)</div>`;
+L.DomEvent.disableClickPropagation(legendEl); L.DomEvent.disableScrollPropagation(legendEl);
+legendEl.querySelector('#L-points').onchange = e => e.target.checked ? pointsLayer.addTo(map) : map.removeLayer(pointsLayer);
+legendEl.querySelector('#L-hex').onchange = e => e.target.checked ? hexLayer.addTo(map) : map.removeLayer(hexLayer);
+legendEl.querySelector('#L-counties').onchange = e => e.target.checked ? countiesLayer.addTo(map) : map.removeLayer(countiesLayer);
+legendEl.querySelector('#L-polys').onchange = e => polyLayer && (e.target.checked ? polyLayer.addTo(map) : map.removeLayer(polyLayer));
+map.createPane('polys').style.zIndex = 430;    // above hexes, below points
+async function loadPolygons(){
+  const gj = await (await fetch('/api/polygons')).json();
+  if (polyLayer) map.removeLayer(polyLayer);
+  polyLayer = L.geoJSON(gj, { pane: 'polys',
+    style: { color: '#7a4b1e', weight: 1.5, fillColor: '#c8935a', fillOpacity: 0.25 },
+    onEachFeature: (f, l) => { const p = f.properties;
+      l.bindTooltip(`Polygon #${p.gid}${p.name ? ' · ' + p.name : ''} — ${p.area_ha} ha<br>${fmt(p.n)} points inside (${fmt(p.n_clean)} clean, ${fmt(p.trees_clean)} trees)`, { sticky: true });
+      l.on('click', () => L.popup({ maxWidth: 320 }).setLatLng(l.getBounds().getCenter())
+        .setContent(`<b>Digitised polygon #${p.gid}</b><dl>
+          <dt>name</dt><dd>${p.name || '–'}</dd><dt>shapefile id</dt><dd>${p.id ?? '– (null)'}</dd>
+          <dt>area</dt><dd>${p.area_ha} ha</dd><dt>source</dt><dd>${p.source} · ${p.created}</dd>
+          <dt>points inside</dt><dd>${fmt(p.n)} (${fmt(p.n_clean)} clean)</dd>
+          <dt>trees (clean)</dt><dd>${fmt(p.trees_clean)}</dd><dt>notes</dt><dd>${p.notes || '–'}</dd></dl>`).openOn(map)); } });
+  if (legendEl.querySelector('#L-polys').checked) polyLayer.addTo(map);
+  document.getElementById('polycount').textContent = `(${gj.features.length})`;
+}
+legendEl.querySelectorAll('input[name=bm]').forEach(r => r.onchange = e => {
+  if (e.target.value === 'sat') {
+    map.removeLayer(base); sat.addTo(map); sat.bringToBack();
+    const h = legendEl.querySelector('#L-hex'); if (h.checked) { h.checked = false; map.removeLayer(hexLayer); }
+  } else {
+    map.removeLayer(sat); base.addTo(map); base.bringToBack();
+  }
+});
+async function toggleHeat(){
+  const on = legendEl.querySelector('#L-heat').checked, metric = legendEl.querySelector('#heat-metric').value;
+  if (heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
+  if (on) { heatLayer = await makeHeat(metric); heatLayer.addTo(map); }
+}
+legendEl.querySelector('#L-heat').onchange = toggleHeat;
+legendEl.querySelector('#heat-metric').onchange = toggleHeat;
+
+const hint = L.DomUtil.create('div', 'panel', map.getContainer()); hint.id = 'zoomhint';
+function updHint(){ const z = map.getZoom(); hint.textContent = z < 9 ? `zoom ${z} — zoom in to 9+ to see individual points` : `zoom ${z}`; }
+map.on('zoomend', updHint); updHint();
+
+// ------------------------------------------------------------------ sidebar
+function syncFlagBars(){ document.querySelectorAll('#flagbars .lab').forEach(el => el.classList.toggle('on', el.dataset.flag === filters.flag)); }
+
+let countySort = { k: 'pct', dir: -1 };
+function renderCountyTable(){
+  const rows = [...(window.countyRows || [])].sort((a, b) => {
+    const va = a[countySort.k], vb = b[countySort.k];
+    return (typeof va === 'string' ? va.localeCompare(vb) : va - vb) * countySort.dir; });
+  const tb = document.querySelector('#ctab tbody');
+  const pctColor = p => p >= 15 ? 'var(--c-cluster)' : p >= 8 ? 'var(--c-trees-high)' : 'inherit';
+  tb.innerHTML = rows.map(r => `<tr class="click ${r.target ? '' : 'dim'}" data-c="${r.county}"><td>${r.county}</td><td>${fmt(r.n)}</td><td>${fmt(r.clean)}</td><td>${fmt(r.removed)}</td><td style="color:${pctColor(r.pct)};font-weight:${r.pct >= 8 ? 600 : 400}">${r.pct.toFixed(1)}%</td><td>${fmt(r.mismatch)}</td></tr>`).join('');
+  document.querySelectorAll('#ctab th').forEach(th => th.textContent = th.textContent.replace(/ [▲▼]$/, '') + (th.dataset.k === countySort.k ? (countySort.dir < 0 ? ' ▼' : ' ▲') : ''));
+  tb.querySelectorAll('tr').forEach(tr => tr.onclick = () => {
+    const f = countiesLayer && countiesLayer.getLayers().find(l => l.feature.properties.name === tr.dataset.c);
+    if (f) map.fitBounds(f.getBounds());
+  });
+}
+document.querySelectorAll('#ctab th').forEach(th => { th.style.cursor = 'pointer'; th.onclick = () => {
+  const k = th.dataset.k; countySort = { k, dir: countySort.k === k ? -countySort.dir : (k === 'county' ? 1 : -1) }; renderCountyTable(); }; });
+
+async function loadProgress(){
+  const p = await (await fetch('/api/progress')).json();
+  const pct = p.clean ? (100 * p.clean_covered / p.clean) : 0;
+  document.getElementById('prog-tiles').innerHTML = `
+    <div class="tile"><div class="v" style="color:#7a4b1e">${fmt(p.polygons)}</div><div class="l">polygons done · ${fmt(p.area_ha)} ha</div></div>
+    <div class="tile"><div class="v">${fmt(p.clean_covered)}</div><div class="l">clean points covered</div></div>
+    <div class="tile"><div class="v">${pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}%</div><div class="l">of ${fmt(p.clean)} clean points</div></div>`;
+  document.getElementById('prog-note').textContent =
+    `${p.first === 'None' ? 'No polygons yet.' : `Digitising ${p.first}${p.last !== p.first ? ' → ' + p.last : ''}`}` +
+    (p.empty_polygons ? ` · ${fmt(p.empty_polygons)} polygon${p.empty_polygons > 1 ? 's' : ''} contain no survey point` : '') +
+    (p.any_covered > p.clean_covered ? ` · ${fmt(p.any_covered - p.clean_covered)} covered points are flagged/removed` : '');
+  const m = Math.max(...p.days.map(d => d.n), 1);
+  document.getElementById('prog-days').innerHTML = p.days.map(d => `<div class="lab">${d.day}</div><div class="bar"><i style="width:${100*d.n/m}%;background:#7a4b1e"></i></div><div class="n">${fmt(d.n)} <span style="color:var(--muted)">(${d.ha} ha)</span></div>`).join('');
+  document.querySelector('#prog-who tbody').innerHTML = p.who.map(w => `<tr><td>${w.user}</td><td>${fmt(w.n)}</td><td>${w.ha}</td><td>${w.last}</td></tr>`).join('');
+  document.querySelector('#prog-county tbody').innerHTML = p.counties.map(c => `<tr class="click" data-c="${c.county}"><td>${c.county}</td><td>${fmt(c.clean)}</td><td>${fmt(c.covered)}</td><td>${c.pct < 1 ? c.pct.toFixed(2) : c.pct.toFixed(1)}%</td></tr>`).join('')
+    || '<tr><td colspan="4" style="text-align:left;color:var(--muted)">no covered points yet</td></tr>';
+  document.querySelectorAll('#prog-county tr.click').forEach(tr => tr.onclick = () => {
+    const f = countiesLayer && countiesLayer.getLayers().find(l => l.feature.properties.name === tr.dataset.c);
+    if (f) map.fitBounds(f.getBounds()); });
+}
+
+async function loadSidebar(){
+  loadProgress();
+  const s = await (await fetch('/api/summary')).json();
+  const total = (s.status.clean || 0) + (s.status.removed || 0);
+  document.getElementById('t-total').textContent = fmt(total);
+  document.getElementById('t-clean').textContent = fmt(s.status.clean || 0);
+  document.getElementById('t-removed').textContent = fmt(s.status.removed || 0);
+  document.getElementById('hdr').textContent = `${fmt(s.source.total)} Kobo submissions · ${fmt(total)} located · ${fmt(s.status.clean||0)} clean (${(100*(s.status.clean||0)/total).toFixed(1)}%)`;
+  document.getElementById('srcnote').textContent =
+    `Not shown: ${fmt(s.source.no_coordinate)} submissions without a coordinate and ${fmt(s.source.invalid_coordinate)} with a coordinate outside the Kenya bounding box. Clean points hold ${fmt(s.trees.clean_total)} trees (median ${fmt(s.trees.clean_median)} per farm) vs ${fmt(s.trees.total)} in the raw data.`;
+
+  const fb = document.getElementById('flagbars'); const mx = Math.max(...s.flags.map(f => f.n), 1);
+  fb.innerHTML = s.flags.map(f => `
+    <div class="lab click" data-flag="${f.flag}"><span class="sw" style="background:${FLAG_COLOR[f.flag]}"></span>${FLAG_LABEL[f.flag] || f.flag}</div>
+    <div class="bar"><i style="width:${100*f.n/mx}%;background:${FLAG_COLOR[f.flag]}"></i></div>
+    <div class="n">${fmt(f.n)}</div>`).join('');
+  fb.querySelectorAll('.lab').forEach(el => el.onclick = () => {
+    filters.flag = filters.flag === el.dataset.flag ? '' : el.dataset.flag;
+    filtersEl.querySelector('#f-flag').value = filters.flag; syncFlagBars(); rebuildPoints();
+  });
+
+  const wb = document.getElementById('warnbars'); const wm = Math.max(...s.warnings.map(f => f.n), 1);
+  wb.innerHTML = s.warnings.length ? s.warnings.map(f => `
+    <div class="lab"><span class="sw" style="background:var(--muted)"></span>${FLAG_LABEL[f.flag] || f.flag}</div>
+    <div class="bar"><i style="width:${100*f.n/wm}%;background:var(--muted)"></i></div>
+    <div class="n">${fmt(f.n)}</div>`).join('') : '<div class="note">none</div>';
+
+  const c = s.criteria;
+  document.getElementById('crit').innerHTML = [
+    ['Target counties', Array.isArray(c.target_counties) ? c.target_counties.length + ' listed' : c.target_counties],
+    ['Road buffer', c.road_buffer_m + ' m'], ['Max implied area', c.max_ha + ' ha'],
+    ['Absurd tree count >', fmt(c.trees_max_estate)], ['Min trees', c.trees_min],
+    ['Cluster radius / min pts', `${c.cluster_eps_m} m / ${c.cluster_minpts}`],
+    ['Flag cluster size ≥', c.cluster_flag_size], ['Flag identical coords ≥', c.dup_flag_size],
+    ['Variety sum mismatch >', Math.round(c.mismatch_frac * 100) + '%'], ['Warn-only flags', c.warn_only]
+  ].map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join('');
+
+  const tb = document.querySelector('#ctab tbody'); const csel = filtersEl.querySelector('#f-county');
+  const keepCounty = csel.value;
+  s.counties.forEach(r => r.pct = r.n ? 100 * r.removed / r.n : 0);
+  window.countyRows = s.counties;
+  renderCountyTable();
+  csel.innerHTML = '<option value="">all</option>'; csel.innerHTML += s.counties.filter(r => !r.county.startsWith('(')).map(r => `<option value="${r.county}">${r.county}</option>`).join('');
+  csel.value = keepCounty;
+
+
+  const h = await (await fetch('/api/hist')).json();
+  const hist = (id, rows, warnFn) => { const m = Math.max(...rows.map(r => r.n), 1);
+    document.getElementById(id).innerHTML = rows.map(r => `<div class="lab">${r.bin}</div><div class="bar"><i class="${warnFn(r.bin) ? 'warn' : ''}" style="width:${100*r.n/m}%"></i></div><div class="n">${fmt(r.n)}</div>`).join(''); };
+  hist('h-trees', h.trees, b => b === '0' || b === '5k-10k' || b === '10k-100k' || b === '100k+');
+  hist('h-road', h.road, b => b === '0-2 m');
+  { const m = Math.max(...h.area.map(r => r.n), 1);
+    document.getElementById('h-area').innerHTML = h.area.map(r => `<div class="lab">${r.bin}</div><div class="bar"><i class="${/^(4-10|10-40|40)/.test(r.bin) ? 'warn' : ''}" style="width:${100*r.n/m}%"></i></div><div class="n">${fmt(r.n)} <span style="color:var(--muted)">(${fmt(r.estate)})</span></div>`).join(''); }
+  hist('h-cluster', h.cluster, b => b !== 'none');
+
+  const cl = await (await fetch('/api/clusters')).json();
+  document.querySelector('#cltab tbody').innerHTML = cl.map(r => `<tr class="click" data-lat="${r.lat}" data-lon="${r.lon}"><td>${r.county || '–'}</td><td>${fmt(r.n)}</td><td>${r.enumerators}</td><td style="text-align:left;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.factory || '–'}</td></tr>`).join('');
+  document.querySelectorAll('#cltab tr.click').forEach(tr => tr.onclick = () => map.setView([+tr.dataset.lat, +tr.dataset.lon], 17));
+}
+
+// ------------------------------------------------------------------ live updates
+let liveTimer;
+function toast(msg){ const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(liveTimer); liveTimer = setTimeout(() => t.classList.remove('show'), 4000); }
+function setLive(state, txt){ const el = document.getElementById('live'); el.className = state; document.getElementById('livetxt').textContent = txt; }
+function connectLive(){
+  const es = new EventSource('/events');
+  es.addEventListener('hello', () => setLive('on', 'live'));
+  es.addEventListener('change', async e => {
+    const d = JSON.parse(e.data); const when = new Date().toLocaleTimeString();
+    setLive('busy', 'updating…');
+    if (d.tables.includes('digitized_polygon')) { await loadPolygons(); loadProgress(); toast(`Digitised polygons updated (${when})`); }
+    if (d.tables.includes('farm_point_qc') || d.tables.includes('farm_point_hex')) {
+      rebuildPoints(); hexLayer.redraw(); await loadSidebar();
+      if (heatLayer) toggleHeat();
+      toast(`QC results updated (${when})`);
+    }
+    setLive('on', `live · last change ${when}`);
+  });
+  es.onerror = () => setLive('', 'reconnecting…');   // EventSource retries by itself
+}
+
+async function init(){
+  await addBasemap();
+  const gj = await (await fetch('/api/counties')).json();
+  countiesLayer = L.geoJSON(gj, { style: f => ({ color: f.properties.target ? '#52514e' : '#c3c2b7', weight: f.properties.target ? 1.2 : 0.8, fill: true, fillOpacity: f.properties.target ? 0 : 0.06, fillColor: '#898781', dashArray: f.properties.target ? null : '3 3' }),
+    onEachFeature: (f, l) => l.bindTooltip(`${f.properties.name}: ${fmt(f.properties.n)} points, ${fmt(f.properties.n_clean)} clean${f.properties.target ? '' : ' — not in target list'}`, { sticky: true }) }).addTo(map);
+  hexLayer = makeHex('n_all').addTo(map);
+  pointsLayer = makePoints().addTo(map);
+  loadPolygons();
+  connectLive();
+  loadSidebar();
+}
+init();
+</script>
+</body>
+</html>
