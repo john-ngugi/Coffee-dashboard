@@ -21,6 +21,7 @@
     --c-cluster: #e34948;    /* slot 8 red     */
     --c-dup: #e87ba4;        /* slot 5 magenta */
     --c-area: #008300;       /* slot 6 green   */
+    --c-poly: #ff2a2a;       /* digitised polygons: vivid red, readable on imagery */
     --seq-1:#cde2fb; --seq-2:#9ec5f4; --seq-3:#6da7ec; --seq-4:#3987e5; --seq-5:#256abf; --seq-6:#184f95; --seq-7:#0d366b;
   }
   * { box-sizing: border-box; }
@@ -203,7 +204,7 @@ function makePoints(){
     vectorTileLayerStyles: { points: (p, z) => ({
       radius: z >= 14 ? 5 : z >= 12 ? 3.5 : 2.5,
       fill: true, fillColor: FLAG_COLOR[p.flag || 'clean'], fillOpacity: p.status === 'clean' ? 0.75 : 0.9,
-      color: p.covered ? '#7a4b1e' : '#fff', weight: p.covered ? 2 : (z >= 13 ? 1 : 0), stroke: p.covered || z >= 13 }) }
+      color: p.covered ? '#ff2a2a' : '#fff', weight: p.covered ? 2 : (z >= 13 ? 1 : 0), stroke: p.covered || z >= 13 }) }
   });
   layer.on('click', e => showPoint(e.layer.properties.kobo_id, e.latlng));
   return layer;
@@ -280,7 +281,7 @@ legendEl.innerHTML = `
   <label style="margin-top:6px"><input type="checkbox" id="L-heat"> <b>Heatmap</b> <select id="heat-metric"><option value="n_all">all points</option><option value="n_removed">removed</option><option value="n_cluster">dense clusters</option><option value="n_clean">clean</option></select></label>
   <label style="margin-top:6px"><input type="checkbox" id="L-counties" checked> <b>County boundaries</b></label>
   <label style="margin-top:6px"><input type="checkbox" id="L-polys" checked> <b>Digitised polygons</b> <span id="polycount" style="color:var(--muted)"></span></label>
-  <div class="row" style="color:var(--muted)"><span class="sw" style="background:var(--c-clean);box-shadow:0 0 0 2px #7a4b1e"></span>point with a polygon (brown ring)</div>`;
+  <div class="row" style="color:var(--muted)"><span class="sw" style="background:var(--c-clean);box-shadow:0 0 0 2px #ff2a2a"></span>point with a polygon (red ring)</div>`;
 L.DomEvent.disableClickPropagation(legendEl); L.DomEvent.disableScrollPropagation(legendEl);
 legendEl.querySelector('#L-points').onchange = e => e.target.checked ? pointsLayer.addTo(map) : map.removeLayer(pointsLayer);
 legendEl.querySelector('#L-hex').onchange = e => e.target.checked ? hexLayer.addTo(map) : map.removeLayer(hexLayer);
@@ -291,7 +292,7 @@ async function loadPolygons(){
   const gj = await (await fetch('/api/polygons')).json();
   if (polyLayer) map.removeLayer(polyLayer);
   polyLayer = L.geoJSON(gj, { pane: 'polys',
-    style: { color: '#7a4b1e', weight: 1.5, fillColor: '#c8935a', fillOpacity: 0.25 },
+    style: { color: '#ff2a2a', weight: 2.5, fillColor: '#ff2a2a', fillOpacity: 0.12 },
     onEachFeature: (f, l) => { const p = f.properties;
       l.bindTooltip(`Polygon #${p.gid}${p.name ? ' · ' + p.name : ''} — ${p.area_ha} ha<br>${fmt(p.n)} points inside (${fmt(p.n_clean)} clean, ${fmt(p.trees_clean)} trees)`, { sticky: true });
       l.on('click', () => L.popup({ maxWidth: 320 }).setLatLng(l.getBounds().getCenter())
@@ -347,7 +348,7 @@ async function loadProgress(){
   const p = await (await fetch('/api/progress')).json();
   const pct = p.clean ? (100 * p.clean_covered / p.clean) : 0;
   document.getElementById('prog-tiles').innerHTML = `
-    <div class="tile"><div class="v" style="color:#7a4b1e">${fmt(p.polygons)}</div><div class="l">polygons done · ${fmt(p.area_ha)} ha</div></div>
+    <div class="tile"><div class="v" style="color:#ff2a2a">${fmt(p.polygons)}</div><div class="l">polygons done · ${fmt(p.area_ha)} ha</div></div>
     <div class="tile"><div class="v">${fmt(p.clean_covered)}</div><div class="l">clean points covered</div></div>
     <div class="tile"><div class="v">${pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}%</div><div class="l">of ${fmt(p.clean)} clean points</div></div>`;
   document.getElementById('prog-note').textContent =
@@ -355,7 +356,7 @@ async function loadProgress(){
     (p.empty_polygons ? ` · ${fmt(p.empty_polygons)} polygon${p.empty_polygons > 1 ? 's' : ''} contain no survey point` : '') +
     (p.any_covered > p.clean_covered ? ` · ${fmt(p.any_covered - p.clean_covered)} covered points are flagged/removed` : '');
   const m = Math.max(...p.days.map(d => d.n), 1);
-  document.getElementById('prog-days').innerHTML = p.days.map(d => `<div class="lab">${d.day}</div><div class="bar"><i style="width:${100*d.n/m}%;background:#7a4b1e"></i></div><div class="n">${fmt(d.n)} <span style="color:var(--muted)">(${d.ha} ha)</span></div>`).join('');
+  document.getElementById('prog-days').innerHTML = p.days.map(d => `<div class="lab">${d.day}</div><div class="bar"><i style="width:${100*d.n/m}%;background:#ff2a2a"></i></div><div class="n">${fmt(d.n)} <span style="color:var(--muted)">(${d.ha} ha)</span></div>`).join('');
   document.querySelector('#prog-who tbody').innerHTML = p.who.map(w => `<tr><td>${w.user}</td><td>${fmt(w.n)}</td><td>${w.ha}</td><td>${w.last}</td></tr>`).join('');
   document.querySelector('#prog-county tbody').innerHTML = p.counties.map(c => `<tr class="click" data-c="${c.county}"><td>${c.county}</td><td>${fmt(c.clean)}</td><td>${fmt(c.covered)}</td><td>${c.pct < 1 ? c.pct.toFixed(2) : c.pct.toFixed(1)}%</td></tr>`).join('')
     || '<tr><td colspan="4" style="text-align:left;color:var(--muted)">no covered points yet</td></tr>';
