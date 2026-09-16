@@ -42,8 +42,40 @@ services:
       CARTO_KEY: ${CARTO_KEY:-}
       MAPTILER_KEY: ${MAPTILER_KEY:-}
     ports:
-      - "${DASH_HOST_PORT:-5055}:5055"
+      - "127.0.0.1:${DASH_HOST_PORT:-5055}:5055"   # LAN/host only; nginx fronts it
+
+  # --- public HTTPS entry point (optional; see deploy/init_https.sh) --------
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: coffee-nginx
+    restart: unless-stopped
+    profiles: ["public"]
+    depends_on:
+      - dashboard
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx/dashboard.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./deploy/nginx/.htpasswd:/etc/nginx/.htpasswd:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot:ro
+
+  certbot:
+    image: certbot/certbot
+    container_name: coffee-certbot
+    restart: unless-stopped
+    profiles: ["public"]
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    # renew twice a day; nginx picks up new certs on its own reload below
+    entrypoint: sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
 
 volumes:
   coffee_pgdata:
     name: coffee_pgdata
+  letsencrypt:
+  certbot_www:

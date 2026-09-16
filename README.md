@@ -50,6 +50,37 @@ sudo docker compose up -d --build dashboard        # redeploy after git pull
 sudo docker compose exec dashboard python build_qc.py --flags   # rerun QC
 ```
 
+## Exposing it outside the LAN (nginx + Let's Encrypt)
+
+Prerequisites: a domain (e.g. `coffee.example.com`) with an A record pointing
+at your public IP, and the router forwarding TCP 80 and 443 to this server.
+
+1. In `.env` set `DOMAIN=coffee.example.com` and `LETSENCRYPT_EMAIL=you@example.com`.
+2. Bootstrap once (creates the basic-auth user `coffee`, obtains the certificate,
+   starts nginx and the auto-renewer):
+
+   ```bash
+   sudo bash deploy/init_https.sh
+   ```
+
+3. From then on include the `public` profile whenever you bring the stack up:
+
+   ```bash
+   sudo docker compose --profile public up -d
+   ```
+
+The dashboard is then at `https://coffee.example.com` behind a username/password
+prompt. Port 5055 is bound to `127.0.0.1` on the host, so the only way in from
+outside is through nginx. Add or change users with:
+
+```bash
+sudo docker run --rm httpd:2.4-alpine htpasswd -nbB alice 'her-password' | sudo tee -a deploy/nginx/.htpasswd
+sudo docker compose exec nginx nginx -s reload
+```
+
+Alternatives that avoid opening router ports: a Cloudflare Tunnel (+ Access
+for login) or Tailscale for a private VPN-only setup.
+
 ## Run locally without Docker
 
 ```bash
