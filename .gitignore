@@ -20,6 +20,8 @@
 !/deploy/init_selfsigned.sh
 !/deploy/nginx/
 !/deploy/nginx/dashboard.conf.template
+!/deploy/sql/
+!/deploy/sql/*.sql
 
 # never, even if un-ignored above by mistake
 .env

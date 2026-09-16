@@ -42,6 +42,23 @@ With the `db` service running and the dump files
 sudo bash deploy/restore_db.sh coffee-pg
 ```
 
+### QGIS layers
+
+Connect to `<server-ip>:5432`, database `coffee_eudr`:
+
+| Layer | Login | Notes |
+|---|---|---|
+| `coffee.farm_point_clean_public` | `coffee_reader` / `coffee_editor` | cleaned points only, PII stripped (key `kobo_id`) |
+| `coffee.digitized_polygon` | `coffee_editor` | editable; leave `gid`/`id` blank, area + timestamps fill automatically |
+| `coffee.farm_point_public` | `coffee_reader` / `coffee_editor` | all raw points, PII stripped |
+
+`farm_point_clean_public` is created by `build_qc.py`; on a database restored
+from an older dump, create it once with:
+
+```bash
+sudo docker compose exec -T db psql -U postgres -d coffee_eudr < deploy/sql/farm_point_clean_public.sql
+```
+
 ### Day-to-day
 
 ```bash

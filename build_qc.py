@@ -291,6 +291,26 @@ def stage_flags(cur, C):
     run(cur, "views: clean / removed", """
         CREATE OR REPLACE VIEW coffee.farm_point_clean   AS SELECT * FROM coffee.farm_point_qc WHERE status = 'clean';
         CREATE OR REPLACE VIEW coffee.farm_point_removed AS SELECT * FROM coffee.farm_point_qc WHERE status = 'removed'""")
+    stage_public_view(cur)
+
+
+# Columns never exposed to the QGIS roles (same set farm_point_public withholds).
+PII_COLUMNS = ("respondent_name", "respondent_id_no", "respondent_phone", "respondent_email",
+               "interviewer_name", "interviewer_id", "interviewer_phone", "comments", "raw")
+
+
+def stage_public_view(cur):
+    """coffee.farm_point_clean_public: clean points only, PII stripped, readable by
+    coffee_reader / coffee_editor. Rebuilt here because the CASCADE drop in
+    stage_copy removes it."""
+    cur.execute("""SELECT column_name FROM information_schema.columns
+                   WHERE table_schema = 'coffee' AND table_name = 'farm_point_qc'
+                   ORDER BY ordinal_position""")
+    cols = ", ".join(c for (c,) in cur.fetchall() if c not in PII_COLUMNS)
+    run(cur, "view: clean_public (PII stripped)", f"""
+        CREATE OR REPLACE VIEW coffee.farm_point_clean_public AS
+        SELECT {cols} FROM coffee.farm_point_qc WHERE status = 'clean';
+        GRANT SELECT ON coffee.farm_point_clean_public TO coffee_reader, coffee_editor""")
 
 
 def stage_hex(cur):
