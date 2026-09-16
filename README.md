@@ -50,7 +50,27 @@ sudo docker compose up -d --build dashboard        # redeploy after git pull
 sudo docker compose exec dashboard python build_qc.py --flags   # rerun QC
 ```
 
-## Exposing it outside the LAN (nginx + Let's Encrypt)
+## Exposing it outside the LAN
+
+Both routes put nginx (HTTPS + username/password) in front of the app and need
+the router to forward TCP 80 and 443 to this server. Port 5055 itself is bound
+to `127.0.0.1` on the host, so nginx is the only way in from outside.
+
+### No domain: public IP + self-signed certificate
+
+1. In `.env` set `DOMAIN=<your public IP>` (`curl ifconfig.me` on the server).
+2. Bootstrap once (creates the basic-auth user `coffee`, generates a 10-year
+   self-signed certificate, starts nginx):
+
+   ```bash
+   sudo bash deploy/init_selfsigned.sh
+   ```
+
+3. Open `https://<public IP>`. Browsers warn once about the certificate
+   ("Advanced -> Proceed"); the connection is still encrypted.
+4. From then on bring the stack up with `sudo docker compose --profile public up -d`.
+
+### With a domain: Let's Encrypt
 
 Prerequisites: a domain (e.g. `coffee.example.com`) with an A record pointing
 at your public IP, and the router forwarding TCP 80 and 443 to this server.
@@ -63,15 +83,12 @@ at your public IP, and the router forwarding TCP 80 and 443 to this server.
    sudo bash deploy/init_https.sh
    ```
 
-3. From then on include the `public` profile whenever you bring the stack up:
+3. From then on bring the stack up with
+   `sudo docker compose --profile public --profile letsencrypt up -d`.
 
-   ```bash
-   sudo docker compose --profile public up -d
-   ```
+### Managing users
 
-The dashboard is then at `https://coffee.example.com` behind a username/password
-prompt. Port 5055 is bound to `127.0.0.1` on the host, so the only way in from
-outside is through nginx. Add or change users with:
+Add or change dashboard users with:
 
 ```bash
 sudo docker run --rm httpd:2.4-alpine htpasswd -nbB alice 'her-password' | sudo tee -a deploy/nginx/.htpasswd

@@ -44,7 +44,9 @@ services:
     ports:
       - "127.0.0.1:${DASH_HOST_PORT:-5055}:5055"   # LAN/host only; nginx fronts it
 
-  # --- public HTTPS entry point (optional; see deploy/init_https.sh) --------
+  # --- public HTTPS entry point (optional) ----------------------------------
+  # deploy/init_selfsigned.sh  -> no domain, self-signed cert (IP access)
+  # deploy/init_https.sh       -> domain + Let's Encrypt
   nginx:
     image: nginx:1.27-alpine
     container_name: coffee-nginx
@@ -60,14 +62,14 @@ services:
     volumes:
       - ./deploy/nginx/dashboard.conf.template:/etc/nginx/templates/default.conf.template:ro
       - ./deploy/nginx/.htpasswd:/etc/nginx/.htpasswd:ro
-      - letsencrypt:/etc/letsencrypt:ro
+      - letsencrypt:/etc/letsencrypt
       - certbot_www:/var/www/certbot:ro
 
   certbot:
     image: certbot/certbot
     container_name: coffee-certbot
     restart: unless-stopped
-    profiles: ["public"]
+    profiles: ["letsencrypt"]
     volumes:
       - letsencrypt:/etc/letsencrypt
       - certbot_www:/var/www/certbot

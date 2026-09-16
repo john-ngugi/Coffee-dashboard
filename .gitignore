@@ -17,6 +17,7 @@
 !/deploy/
 !/deploy/restore_db.sh
 !/deploy/init_https.sh
+!/deploy/init_selfsigned.sh
 !/deploy/nginx/
 !/deploy/nginx/dashboard.conf.template
 

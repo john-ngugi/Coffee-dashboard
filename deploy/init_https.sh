@@ -14,20 +14,20 @@ if [ ! -f deploy/nginx/.htpasswd ]; then
 fi
 
 echo "== temporary self-signed cert so nginx can start"
-docker compose run --rm --entrypoint sh certbot -c "
+docker compose --profile letsencrypt run --rm --entrypoint sh certbot -c "
   mkdir -p /etc/letsencrypt/live/$DOMAIN &&
   openssl req -x509 -nodes -newkey rsa:2048 -days 1 -subj '/CN=$DOMAIN' \
     -keyout /etc/letsencrypt/live/$DOMAIN/privkey.pem \
     -out    /etc/letsencrypt/live/$DOMAIN/fullchain.pem"
 
-docker compose up -d nginx
+docker compose --profile public up -d nginx
 
 echo "== requesting the real certificate"
-docker compose run --rm --entrypoint sh certbot -c "
+docker compose --profile letsencrypt run --rm --entrypoint sh certbot -c "
   rm -rf /etc/letsencrypt/live/$DOMAIN /etc/letsencrypt/archive/$DOMAIN /etc/letsencrypt/renewal/$DOMAIN.conf;
   certbot certonly --webroot -w /var/www/certbot -d $DOMAIN \
     --email $LETSENCRYPT_EMAIL --agree-tos --no-eff-email --non-interactive"
 
 docker compose exec nginx nginx -s reload
-docker compose up -d certbot
+docker compose --profile letsencrypt up -d certbot
 echo "== done: https://$DOMAIN"
