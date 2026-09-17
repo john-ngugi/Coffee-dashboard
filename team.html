@@ -29,6 +29,11 @@
   tr.click { cursor: pointer; } tr.click:hover td { background: var(--plane); }
   tr.undone td { opacity: .45; text-decoration: line-through; }
   tr.flagged td { background: rgba(227,73,72,.10); }
+  .card.scroll { display: flex; flex-direction: column; height: 320px; padding-bottom: 0; }
+  .card.scroll.tall { height: 460px; }
+  .card.scroll > h2 { flex: none; }
+  .card.scroll > .body { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -16px; padding: 0 16px 8px; }
+  .card.scroll thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; box-shadow: 0 1px 0 var(--border); }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; } @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
   .bars { display: grid; grid-template-columns: 74px 1fr 90px; gap: 4px 8px; align-items: center; font-size: 12px; }
   .bars .bar { height: 10px; background: var(--plane); border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
@@ -70,27 +75,27 @@
     <h2 id="me-title">My work</h2>
     <div class="tiles" id="me-tiles"></div>
     <div class="grid2" style="margin-top:12px">
-      <div class="card"><h2 style="margin-top:0">By county</h2><table id="me-counties"><thead><tr><th>county</th><th>polygons</th><th>ha</th></tr></thead><tbody></tbody></table></div>
-      <div class="card"><h2 style="margin-top:0">Last 14 days</h2><div class="bars" id="me-days"></div></div>
+      <div class="card scroll"><h2 style="margin-top:0">By county</h2><div class="body"><table id="me-counties"><thead><tr><th>county</th><th>polygons</th><th>ha</th></tr></thead><tbody></tbody></table></div></div>
+      <div class="card scroll"><h2 style="margin-top:0">Last 14 days</h2><div class="body"><div class="bars" id="me-days"></div></div></div>
     </div>
     <div class="grid2" style="margin-top:12px">
-      <div class="card"><h2 style="margin-top:0">My recent polygon changes</h2><table id="me-changes"><thead><tr><th>when</th><th>op</th><th>polygon</th><th>ha</th><th></th></tr></thead><tbody></tbody></table></div>
-      <div class="card"><h2 style="margin-top:0">My recent point moves</h2><table id="me-moves"><thead><tr><th>when</th><th>point</th><th>moved</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="card scroll"><h2 style="margin-top:0">My recent polygon changes</h2><div class="body"><table id="me-changes"><thead><tr><th>when</th><th>op</th><th>polygon</th><th>ha</th><th></th></tr></thead><tbody></tbody></table></div></div>
+      <div class="card scroll"><h2 style="margin-top:0">My recent point moves</h2><div class="body"><table id="me-moves"><thead><tr><th>when</th><th>point</th><th>moved</th><th></th></tr></thead><tbody></tbody></table></div></div>
     </div>
 
     <div id="team" class="hidden">
       <h2 id="team-title">Team</h2>
       <p class="note" id="team-note"></p>
-      <div class="card"><table id="team-tab"><thead><tr><th>name</th><th class="l">role</th><th>polygons</th><th>ha</th><th>today</th><th>7 days</th><th>points moved</th><th>flagged</th><th>last save</th></tr></thead><tbody></tbody></table></div>
+      <div class="card scroll tall"><div class="body"><table id="team-tab"><thead><tr><th>name</th><th class="l">role</th><th>polygons</th><th>ha</th><th>today</th><th>7 days</th><th>points moved</th><th>flagged</th><th>last save</th></tr></thead><tbody></tbody></table></div></div>
 
       <h2>Flagged changes awaiting review</h2>
-      <div class="card"><table id="flag-tab"><thead><tr><th>when</th><th class="l">who</th><th>op</th><th>polygon</th><th class="l">note</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="card scroll tall"><div class="body"><table id="flag-tab"><thead><tr><th>when</th><th class="l">who</th><th>op</th><th>polygon</th><th class="l">note</th><th></th></tr></thead><tbody></tbody></table></div></div>
 
       <div id="detail" class="hidden">
         <h2 id="detail-title"></h2>
         <div class="grid2">
-          <div class="card"><h2 style="margin-top:0">Polygon changes</h2><table id="d-changes"><thead><tr><th>when</th><th>op</th><th>polygon</th><th>ha</th><th></th></tr></thead><tbody></tbody></table></div>
-          <div class="card"><h2 style="margin-top:0">Point moves</h2><table id="d-moves"><thead><tr><th>when</th><th>point</th><th>moved</th><th></th></tr></thead><tbody></tbody></table></div>
+          <div class="card scroll"><h2 style="margin-top:0">Polygon changes</h2><div class="body"><table id="d-changes"><thead><tr><th>when</th><th>op</th><th>polygon</th><th>ha</th><th></th></tr></thead><tbody></tbody></table></div></div>
+          <div class="card scroll"><h2 style="margin-top:0">Point moves</h2><div class="body"><table id="d-moves"><thead><tr><th>when</th><th>point</th><th>moved</th><th></th></tr></thead><tbody></tbody></table></div></div>
         </div>
       </div>
     </div>
