@@ -142,6 +142,11 @@ def stage_copy(cur):
         CREATE INDEX farm_point_qc_geom_idx ON coffee.farm_point_qc USING gist (geom);
         CREATE INDEX farm_point_qc_geom_utm_idx ON coffee.farm_point_qc USING gist (geom_utm);
         ANALYZE coffee.farm_point_qc""")
+    # points digitisers dragged to the farm centre (deploy/sql/point_moves.sql) keep their new position
+    cur.execute("SELECT to_regprocedure('coffee.reapply_point_moves()')")
+    if cur.fetchone()[0]:
+        cur.execute("SELECT coffee.reapply_point_moves()"); n = cur.fetchone()[0]; cur.connection.commit()
+        print(f"  [   -   ] re-applied {n:,} moved point(s)", flush=True)
 
 
 def stage_county(cur):
@@ -292,6 +297,17 @@ def stage_flags(cur, C):
         CREATE OR REPLACE VIEW coffee.farm_point_clean   AS SELECT * FROM coffee.farm_point_qc WHERE status = 'clean';
         CREATE OR REPLACE VIEW coffee.farm_point_removed AS SELECT * FROM coffee.farm_point_qc WHERE status = 'removed'""")
     stage_public_view(cur)
+    run(cur, "polygon tracking (polygon_gid / digitised_at)", TRACK_SQL)
+    stage_deploy_sql(cur)
+
+
+def stage_deploy_sql(cur):
+    """Re-run the deploy/sql scripts whose objects were dropped with farm_point_qc
+    (INSTEAD OF trigger + grants on farm_point_clean_public, ...). All idempotent."""
+    for name in ("polygon_history.sql", "point_moves.sql"):
+        f = HERE / "deploy" / "sql" / name
+        if f.exists():
+            run(cur, f"deploy/sql/{name}", f.read_text(encoding="utf-8"))
 
 
 # Columns never exposed to the QGIS roles (same set farm_point_public withholds).

@@ -100,6 +100,7 @@
 <header>
   <h1>Coffee farm points — QC review</h1>
   <span class="sub" id="hdr">loading…</span>
+  <a href="/team" style="font-size:12px;color:var(--ink-2)">team portal</a>
   <span id="live" title="Live updates from the database (LISTEN/NOTIFY)"><i></i><span id="livetxt">connecting…</span></span>
 </header>
 <div id="toast"></div>
@@ -179,6 +180,8 @@ L.Canvas.Tile.prototype._onClick = function (e) {
 };
 
 const map = L.map('map', { preferCanvas: true }).setView([-0.4, 36.4], 7);
+// /#z=17&lat=..&lon=..  (links from the /team portal)
+{ const h = new URLSearchParams(location.hash.slice(1)); if (h.get('lat') && h.get('lon')) map.setView([+h.get('lat'), +h.get('lon')], +(h.get('z') || 17)); }
 map.createPane('hex').style.zIndex = 420;      // above county outlines (400)
 map.createPane('points').style.zIndex = 450;   // above hexes, below markers/popups
 let base;

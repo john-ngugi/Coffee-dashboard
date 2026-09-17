@@ -11,12 +11,14 @@
 !/README.md
 !/dashboard.py
 !/dashboard.html
+!/team.html
 !/build_qc.py
 !/export_qc.py
 !/target_counties.txt
 !/deploy/
 !/deploy/restore_db.sh
 !/deploy/add_digitiser.sh
+!/deploy/make_team_credentials.py
 !/deploy/init_https.sh
 !/deploy/init_selfsigned.sh
 !/deploy/nginx/
@@ -28,6 +30,7 @@
 .env
 qgis_access.txt
 *.dump
+credentials/
 deploy/nginx/.htpasswd
 *.jsonl
 __pycache__/

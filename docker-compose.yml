@@ -41,6 +41,7 @@ services:
       PGDATABASE: coffee_eudr
       CARTO_KEY: ${CARTO_KEY:-}
       MAPTILER_KEY: ${MAPTILER_KEY:-}
+      DASH_SECRET: ${DASH_SECRET:-}
     ports:
       - "127.0.0.1:${DASH_HOST_PORT:-5055}:5055"   # LAN/host only; nginx fronts it
 

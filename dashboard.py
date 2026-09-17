@@ -9,7 +9,7 @@ render without preloading, plus summary / histogram endpoints for the sidebar.
 """
 import os, json, time, select
 from pathlib import Path
-from flask import Flask, Response, request, jsonify, send_file, stream_with_context
+from flask import Flask, Response, request, jsonify, send_file, stream_with_context, session, abort
 import psycopg2, psycopg2.pool, psycopg2.extensions
 
 HERE = Path(__file__).resolve().parent
@@ -38,6 +38,8 @@ class BlockingPool:
 
 POOL = BlockingPool(8)
 app = Flask(__name__, static_folder=None)
+# signs the /team login cookie; set DASH_SECRET in .env so logins survive restarts
+app.secret_key = os.environ.get("DASH_SECRET") or __import__("secrets").token_hex(32)
 
 
 # ---------------------------------------------------------------- live updates
@@ -259,7 +261,10 @@ def progress():
                    FROM coffee.farm_point_qc""", one=True)
     days = query("""SELECT created_at::date, count(*), round(sum(area_ha),1), count(DISTINCT created_by)
                     FROM coffee.digitized_polygon GROUP BY 1 ORDER BY 1 DESC LIMIT 30""")
-    who = query("""SELECT created_by, count(*), round(sum(area_ha),1), max(created_at)
+    who = query("""SELECT coalesce(m.full_name, d.created_by), count(*), round(sum(area_ha),1), max(created_at)
+                   FROM coffee.digitized_polygon d LEFT JOIN coffee.team_member m ON m.login = d.created_by
+                   GROUP BY 1 ORDER BY 2 DESC""") if has_table("coffee.team_member") else \
+          query("""SELECT created_by, count(*), round(sum(area_ha),1), max(created_at)
                    FROM coffee.digitized_polygon GROUP BY 1 ORDER BY 2 DESC""")
     counties = query("""
       SELECT county_gis, count(*) FILTER (WHERE status='clean'),
@@ -276,6 +281,184 @@ def progress():
         who=[dict(user=u, n=n, ha=float(h), last=str(l)[:16]) for u, n, h, l in who],
         counties=[dict(county=c, clean=n, covered=k, pct=(100.0 * k / n if n else 0)) for c, n, k in counties],
     ))
+
+
+def has_table(name):
+    return bool(query("SELECT to_regclass(%s)", (name,), one=True)[0])
+
+
+# ---------------------------------------------------------------- team portal
+# /team: each person signs in with their own database login (deploy/sql/team.sql,
+# deploy/make_team_credentials.py) and sees their digitising stats; supervisors
+# see their team and can flag / undo. Actions run as the signed-in role
+# (SET LOCAL ROLE) so the database enforces who may undo, and coffee.actor
+# makes the history name the person rather than the dashboard's connection.
+@app.errorhandler(401)
+def _unauth(e): return jsonify(error="sign in first"), 401
+
+
+@app.errorhandler(403)
+def _forbidden(e): return jsonify(error="not allowed"), 403
+
+
+@app.get("/team")
+def team_page():
+    return send_file(HERE / "team.html")
+
+
+def team_user():
+    u = session.get("user")
+    if not u:
+        abort(401)
+    m = query("""SELECT login, full_name, title, role_group, team_lead, can_undo, can_edit, sees_all
+                 FROM coffee.team_member_access WHERE login = %s AND active""", (u,), one=True)
+    if not m:
+        session.clear(); abort(401)
+    return dict(zip(("login", "name", "title", "group", "lead", "can_undo", "can_edit", "sees_all"), m))
+
+
+@app.post("/api/team/login")
+def team_login():
+    d = request.get_json(force=True) or {}
+    login, pw = (d.get("user") or "").strip().lower(), d.get("password") or ""
+    if not login or not pw or not has_table("coffee.team_member"):
+        return jsonify(error="missing login or password"), 400
+    try:
+        psycopg2.connect(host=os.environ["PGHOST"], port=os.environ["PGPORT"], user=login, password=pw,
+                         dbname=os.environ["PGDATABASE"], connect_timeout=5).close()
+    except psycopg2.OperationalError:
+        return jsonify(error="wrong login or password"), 401
+    session["user"] = login
+    try:
+        return jsonify(team_user())
+    except Exception:
+        session.clear(); return jsonify(error="login is valid but not in the team roster"), 403
+
+
+@app.post("/api/team/logout")
+def team_logout():
+    session.clear(); return jsonify(ok=True)
+
+
+@app.get("/api/team/me")
+def team_me():
+    return jsonify(team_user())
+
+
+def visible_logins(me):
+    """Which members this user may see: everyone, their own team, or just themselves."""
+    if me["sees_all"]:
+        return [r[0] for r in query("SELECT login FROM coffee.team_member WHERE active ORDER BY seq")]
+    if me["group"] == "qc":
+        return [r[0] for r in query("SELECT login FROM coffee.team_member WHERE active AND (login = %s OR team_lead = %s) ORDER BY seq",
+                                    (me["login"], me["login"]))]
+    return [me["login"]]
+
+
+@app.get("/api/team/stats")
+def team_stats():
+    """Per-member digitising stats for the members the signed-in user may see."""
+    me = team_user(); logins = visible_logins(me)
+    rows = query("""
+      WITH poly AS (
+        SELECT created_by, count(*) n, round(sum(area_ha),1) ha, max(created_at) last,
+               count(*) FILTER (WHERE created_at::date = current_date) today,
+               count(*) FILTER (WHERE created_at > now() - interval '7 days') week
+        FROM coffee.digitized_polygon WHERE created_by = ANY(%s) GROUP BY 1),
+      mv AS (SELECT moved_by, count(*) n FROM coffee.farm_point_move
+             WHERE undoes IS NULL AND undone_by IS NULL AND moved_by = ANY(%s) GROUP BY 1),
+      fl AS (SELECT changed_by, count(*) n FROM coffee.digitized_polygon_history
+             WHERE flagged AND undone_by IS NULL AND changed_by = ANY(%s) GROUP BY 1)
+      SELECT m.login, m.full_name, m.title, m.role_group, m.team_lead, l.full_name,
+             coalesce(p.n,0), coalesce(p.ha,0), p.last, coalesce(p.today,0), coalesce(p.week,0),
+             coalesce(mv.n,0), coalesce(fl.n,0)
+      FROM coffee.team_member m
+      LEFT JOIN coffee.team_member l ON l.login = m.team_lead
+      LEFT JOIN poly p ON p.created_by = m.login
+      LEFT JOIN mv ON mv.moved_by = m.login
+      LEFT JOIN fl ON fl.changed_by = m.login
+      WHERE m.login = ANY(%s) ORDER BY m.seq""", (logins, logins, logins, logins))
+    return jsonify(dict(me=me, members=[
+        dict(login=a, name=b, title=c, group=g, lead=ld, lead_name=ln, polygons=n, ha=float(ha),
+             last=(str(last)[:16] if last else None), today=t, week=w, moved=mv, flagged=f)
+        for a, b, c, g, ld, ln, n, ha, last, t, w, mv, f in rows]))
+
+
+@app.get("/api/team/member/<login>")
+def team_member(login):
+    """Detail for one member: counties, per-day, recent changes and moves."""
+    me = team_user()
+    if login not in visible_logins(me):
+        abort(403)
+    counties = query("""
+      SELECT c.counties, count(*), round(sum(d.area_ha),1)
+      FROM coffee.digitized_polygon d JOIN ref.kenya_counties c ON ST_Intersects(c.geom, ST_Centroid(d.geom))
+      WHERE d.created_by = %s GROUP BY 1 ORDER BY 2 DESC""", (login,))
+    days = query("""SELECT created_at::date, count(*), round(sum(area_ha),1)
+                    FROM coffee.digitized_polygon WHERE created_by = %s GROUP BY 1 ORDER BY 1 DESC LIMIT 14""", (login,))
+    changes = query("""
+      SELECT hist_id, gid, op, changed_at, name, coalesce(area_ha_after, area_ha_before), flagged, flag_note, undone, undoes IS NOT NULL,
+             ST_Y(ST_Centroid(geom)), ST_X(ST_Centroid(geom))
+      FROM coffee.digitized_polygon_activity WHERE changed_by = %s ORDER BY hist_id DESC LIMIT 40""", (login,))
+    moves = query("""
+      SELECT move_id, kobo_id, moved_at, round(dist_m), undone_by IS NOT NULL, undoes IS NOT NULL,
+             ST_Y(geom_after), ST_X(geom_after)
+      FROM coffee.farm_point_move WHERE moved_by = %s ORDER BY move_id DESC LIMIT 40""", (login,))
+    return jsonify(dict(
+        counties=[dict(county=c, n=n, ha=float(h)) for c, n, h in counties],
+        days=[dict(day=str(d), n=n, ha=float(h)) for d, n, h in days],
+        changes=[dict(id=i, gid=g, op=op, at=str(at)[:16], name=nm, ha=(float(ha) if ha is not None else None),
+                      flagged=f, note=note, undone=u, is_undo=iu, lat=lat, lon=lon)
+                 for i, g, op, at, nm, ha, f, note, u, iu, lat, lon in changes],
+        moves=[dict(id=i, kobo_id=k, at=str(at)[:16], dist=int(d), undone=u, is_undo=iu, lat=lat, lon=lon)
+               for i, k, at, d, u, iu, lat, lon in moves]))
+
+
+@app.get("/api/team/flagged")
+def team_flagged():
+    me = team_user(); logins = visible_logins(me)
+    rows = query("""
+      SELECT h.hist_id, h.gid, h.op, h.changed_at, h.changed_by, coalesce(m.full_name, h.changed_by),
+             h.name, h.flag_note, h.flagged_by, ST_Y(ST_Centroid(h.geom)), ST_X(ST_Centroid(h.geom))
+      FROM coffee.digitized_polygon_activity h LEFT JOIN coffee.team_member m ON m.login = h.changed_by
+      WHERE h.flagged AND NOT h.undone AND h.changed_by = ANY(%s) ORDER BY h.hist_id DESC LIMIT 100""", (logins,))
+    return jsonify([dict(id=i, gid=g, op=op, at=str(at)[:16], by=by, by_name=bn, name=nm, note=note, flagged_by=fb, lat=lat, lon=lon)
+                    for i, g, op, at, by, bn, nm, note, fb, lat, lon in rows])
+
+
+def run_as(login, sql, params):
+    """Execute one statement as the signed-in role; the DB decides if it is allowed."""
+    conn = POOL.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL ROLE " + psycopg2.extensions.quote_ident(login, conn))
+            cur.execute("SELECT set_config('coffee.actor', %s, true)", (login,))
+            cur.execute(sql, params)
+            out = cur.fetchone()
+        conn.commit()
+        return out, None
+    except psycopg2.Error as e:
+        conn.rollback()
+        return None, (e.diag.message_primary or str(e)).strip()
+    finally:
+        POOL.putconn(conn)
+
+
+@app.post("/api/team/action")
+def team_action():
+    me = team_user(); d = request.get_json(force=True) or {}
+    what, ident, note = d.get("what"), d.get("id"), d.get("note")
+    if what == "flag":
+        out, err = run_as(me["login"], "SELECT coffee.flag_change(%s, %s)", (ident, note))
+    elif what == "undo":
+        out, err = run_as(me["login"], "SELECT coffee.undo_change(%s)", (ident,))
+    elif what == "undo_move":
+        out, err = run_as(me["login"], "SELECT coffee.undo_point_move(%s)", (ident,))
+    else:
+        return jsonify(error="unknown action"), 400
+    if err:
+        return jsonify(error=err), 403 if "permission denied" in err else 400
+    return jsonify(ok=True, result=out[0])
 
 
 @app.get("/api/history")

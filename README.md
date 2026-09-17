@@ -48,7 +48,7 @@ Connect to `<server-ip>:5432`, database `coffee_eudr`:
 
 | Layer | Login | Notes |
 |---|---|---|
-| `coffee.farm_point_clean_public` | `coffee_reader` / `coffee_editor` | cleaned points only, PII stripped (key `kobo_id`) |
+| `coffee.farm_point_clean_public` | personal login / `coffee_editor` | cleaned points, PII stripped (key `kobo_id`); geometry editable, see below |
 | `coffee.digitized_polygon` | `coffee_editor` or personal login | editable; leave `gid`/`id` blank, area + timestamps fill automatically |
 | `coffee.farm_point_public` | `coffee_reader` / `coffee_editor` | all raw points, PII stripped |
 
@@ -59,12 +59,12 @@ from an older dump, create it once with:
 sudo docker compose exec -T db psql -U postgres -d coffee_eudr < deploy/sql/farm_point_clean_public.sql
 ```
 
-### Multi-user digitising: personal logins, history, undo
+### Multi-user digitising: personal logins, history, undo, point moves
 
-Enable once per database (idempotent):
+Enable once per database (all idempotent, in this order):
 
 ```bash
-sudo docker compose exec -T db psql -U postgres -d coffee_eudr < deploy/sql/polygon_history.sql
+for f in polygon_history team point_moves; do sudo docker compose exec -T db psql -U postgres -d coffee_eudr < deploy/sql/$f.sql; done
 ```
 
 This adds `coffee.digitized_polygon_history` (every insert / update / delete
@@ -81,16 +81,42 @@ Undos are themselves logged and can be undone again. A single statement may
 not delete or update more than 25 polygons (`SET coffee.allow_bulk = 'on'` to
 override in a session). Editors no longer have write access to `farm_point_public`.
 
-Give every digitiser their own login so the history names the person, not a
-shared account:
+#### Team logins
+
+Every team member gets their own database login (so history names the person)
+generated from the roster in `deploy/make_team_credentials.py`:
 
 ```bash
-sudo bash deploy/add_digitiser.sh alice bob carol        # editors
-sudo bash deploy/add_digitiser.sh --supervisor jane      # can undo
+python deploy/make_team_credentials.py        # on your PC -> credentials/ (never committed)
+scp credentials/team_logins.sql user@server:~/Coffee-dashboard/credentials/
+sudo docker compose exec -T db psql -U postgres -d coffee_eudr < credentials/team_logins.sql   # on the server
 ```
 
-It prints one generated password per user. In QGIS they connect exactly like
-`coffee_editor`, with their own name and password.
+`credentials/team_credentials.csv` has name, login, password and rights for
+distribution. Coordinator, QC leads, data and management get
+`coffee_supervisor` (edit + undo); digitisers and image classification get
+`coffee_editor`. Re-running the script keeps existing passwords;
+`--reset login` issues a new one. `deploy/add_digitiser.sh` still works for a
+quick extra login outside the roster.
+
+#### Moving points to the farm centre
+
+`coffee.farm_point_clean_public` is editable in QGIS **for geometry only**:
+digitisers drag a point onto the farm, save, and the move is applied to
+`farm_point_qc` (lat/lon, UTM geometry and containing polygon updated) and
+logged in `coffee.farm_point_move`. Attributes cannot be changed, points cannot
+be deleted, and a single move over 500 m is refused. Supervisors undo with
+`coffee.undo_point_move(move_id)` or from the portal. `build_qc.py` re-applies
+every move after a rebuild, so QC reruns never lose them.
+
+#### Team portal — `/team`
+
+Each person signs in at `http://<server>:5055/team` with their database login
+and sees their own polygons, hectares, counties, per-day progress, point moves
+and anything flagged on their work. QC leads see their team; the coordinator,
+data and management see all teams. Supervisors can flag and undo from the
+page; the action runs as their database role, so the database itself decides
+who may undo. Set `DASH_SECRET` in `.env` so sign-ins survive restarts.
 
 Typical supervisor session (psql or the QGIS DB Manager SQL window):
 

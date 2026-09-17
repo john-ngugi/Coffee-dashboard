@@ -14,13 +14,21 @@ DO $$ BEGIN
 END $$;
 GRANT coffee_editor TO coffee_supervisor;
 
+-- 1b. who is acting: the login, or -- when the dashboard's superuser connection
+--     acts on behalf of a signed-in team member -- the coffee.actor setting.
+CREATE OR REPLACE FUNCTION coffee.actor() RETURNS text LANGUAGE sql STABLE AS $$
+    SELECT CASE WHEN coalesce(current_setting('coffee.actor', true), '') <> ''
+                 AND (SELECT rolsuper FROM pg_roles WHERE rolname = session_user)
+           THEN current_setting('coffee.actor', true) ELSE session_user::text END
+$$;
+
 -- 2. history table
 CREATE TABLE IF NOT EXISTS coffee.digitized_polygon_history (
     hist_id      bigserial PRIMARY KEY,
     gid          integer     NOT NULL,
     op           text        NOT NULL CHECK (op IN ('INSERT', 'UPDATE', 'DELETE')),
     changed_at   timestamptz NOT NULL DEFAULT now(),
-    changed_by   text        NOT NULL DEFAULT session_user,
+    changed_by   text        NOT NULL DEFAULT coffee.actor(),
     client_addr  inet                 DEFAULT inet_client_addr(),
     application  text                 DEFAULT current_setting('application_name', true),
     before       jsonb,               -- full row before the change (UPDATE / DELETE)
@@ -33,6 +41,9 @@ CREATE TABLE IF NOT EXISTS coffee.digitized_polygon_history (
     undone_by    bigint REFERENCES coffee.digitized_polygon_history (hist_id),  -- set when this change was undone
     undoes       bigint REFERENCES coffee.digitized_polygon_history (hist_id)   -- set when this row IS an undo
 );
+-- upgrades for a table created by an earlier version of this script
+ALTER TABLE coffee.digitized_polygon_history ALTER COLUMN changed_by SET DEFAULT coffee.actor();
+ALTER TABLE coffee.digitized_polygon_history ADD COLUMN IF NOT EXISTS undoes bigint REFERENCES coffee.digitized_polygon_history (hist_id);
 CREATE INDEX IF NOT EXISTS digitized_polygon_history_gid_idx  ON coffee.digitized_polygon_history (gid, hist_id);
 CREATE INDEX IF NOT EXISTS digitized_polygon_history_at_idx   ON coffee.digitized_polygon_history (changed_at DESC);
 CREATE INDEX IF NOT EXISTS digitized_polygon_history_by_idx   ON coffee.digitized_polygon_history (changed_by, changed_at DESC);
@@ -87,7 +98,7 @@ CREATE TRIGGER digitized_polygon_bulk_update AFTER UPDATE ON coffee.digitized_po
 CREATE OR REPLACE FUNCTION coffee.flag_change(p_hist_id bigint, p_note text DEFAULT NULL) RETURNS void
 LANGUAGE sql SECURITY DEFINER SET search_path = coffee, public AS $$
     UPDATE coffee.digitized_polygon_history
-    SET flagged = true, flag_note = p_note, flagged_by = session_user
+    SET flagged = true, flag_note = p_note, flagged_by = coffee.actor()
     WHERE hist_id = p_hist_id;
 $$;
 REVOKE ALL ON FUNCTION coffee.flag_change(bigint, text) FROM PUBLIC;

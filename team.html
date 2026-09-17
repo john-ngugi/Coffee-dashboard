@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coffee digitising — team</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb; --plane: #f9f9f7; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --border: rgba(11,11,11,.10); --accent: #2a78d6; --red: #e34948; --poly: #ff2a2a; --green: #0ca30c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--plane); }
+  header { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .who { margin-left: auto; color: var(--ink-2); font-size: 12px; display: flex; gap: 12px; align-items: center; }
+  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h2 { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 22px 0 8px; font-weight: 600; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+  .tile .v { font-size: 22px; font-weight: 600; line-height: 1.1; } .tile .l { color: var(--ink-2); font-size: 11px; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 5px 6px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child, th.l, td.l { text-align: left; }
+  th { color: var(--muted); font-weight: 500; font-size: 11px; }
+  tr.click { cursor: pointer; } tr.click:hover td { background: var(--plane); }
+  tr.undone td { opacity: .45; text-decoration: line-through; }
+  tr.flagged td { background: rgba(227,73,72,.10); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; } @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+  .bars { display: grid; grid-template-columns: 74px 1fr 90px; gap: 4px 8px; align-items: center; font-size: 12px; }
+  .bars .bar { height: 10px; background: var(--plane); border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
+  .bars .bar i { display: block; height: 100%; background: var(--poly); }
+  button { font: inherit; padding: 5px 10px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.danger { color: var(--red); } button.sm { padding: 2px 7px; font-size: 11px; }
+  button:disabled { opacity: .5; cursor: default; }
+  input { font: inherit; padding: 7px 9px; border: 1px solid var(--border); border-radius: 5px; width: 100%; background: #fff; }
+  label { display: block; font-size: 12px; color: var(--ink-2); margin: 10px 0 4px; }
+  #login { max-width: 360px; margin: 60px auto; }
+  .err { color: var(--red); font-size: 12px; min-height: 16px; margin-top: 8px; }
+  .note { color: var(--muted); font-size: 12px; margin: 4px 0 8px; }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; background: var(--plane); border: 1px solid var(--border); color: var(--ink-2); }
+  .team-h td { background: var(--plane); font-weight: 600; text-align: left; }
+  #toast { position: fixed; bottom: 20px; right: 16px; background: var(--ink); color: #fff; padding: 8px 12px; border-radius: 6px; font-size: 12px; opacity: 0; transition: opacity .3s; pointer-events: none; }
+  #toast.show { opacity: .92; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Coffee digitising — team</h1>
+  <a href="/">← map dashboard</a>
+  <span class="who" id="who"></span>
+</header>
+
+<main>
+  <section id="login" class="card">
+    <h2 style="margin-top:0">Sign in with your database login</h2>
+    <p class="note">Same username and password you use in QGIS.</p>
+    <label>Username</label><input id="u" autocomplete="username" autocapitalize="none" spellcheck="false">
+    <label>Password</label><input id="p" type="password" autocomplete="current-password">
+    <div class="err" id="login-err"></div>
+    <button class="primary" id="login-btn" style="margin-top:6px;width:100%">Sign in</button>
+  </section>
+
+  <section id="app" class="hidden">
+    <h2 id="me-title">My work</h2>
+    <div class="tiles" id="me-tiles"></div>
+    <div class="grid2" style="margin-top:12px">
+      <div class="card"><h2 style="margin-top:0">By county</h2><table id="me-counties"><thead><tr><th>county</th><th>polygons</th><th>ha</th></tr></thead><tbody></tbody></table></div>
+      <div class="card"><h2 style="margin-top:0">Last 14 days</h2><div class="bars" id="me-days"></div></div>
+    </div>
+    <div class="grid2" style="margin-top:12px">
+      <div class="card"><h2 style="margin-top:0">My recent polygon changes</h2><table id="me-changes"><thead><tr><th>when</th><th>op</th><th>polygon</th><th>ha</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="card"><h2 style="margin-top:0">My recent point moves</h2><table id="me-moves"><thead><tr><th>when</th><th>point</th><th>moved</th><th></th></tr></thead><tbody></tbody></table></div>
+    </div>
+
+    <div id="team" class="hidden">
+      <h2 id="team-title">Team</h2>
+      <p class="note" id="team-note"></p>
+      <div class="card"><table id="team-tab"><thead><tr><th>name</th><th class="l">role</th><th>polygons</th><th>ha</th><th>today</th><th>7 days</th><th>points moved</th><th>flagged</th><th>last save</th></tr></thead><tbody></tbody></table></div>
+
+      <h2>Flagged changes awaiting review</h2>
+      <div class="card"><table id="flag-tab"><thead><tr><th>when</th><th class="l">who</th><th>op</th><th>polygon</th><th class="l">note</th><th></th></tr></thead><tbody></tbody></table></div>
+
+      <div id="detail" class="hidden">
+        <h2 id="detail-title"></h2>
+        <div class="grid2">
+          <div class="card"><h2 style="margin-top:0">Polygon changes</h2><table id="d-changes"><thead><tr><th>when</th><th>op</th><th>polygon</th><th>ha</th><th></th></tr></thead><tbody></tbody></table></div>
+          <div class="card"><h2 style="margin-top:0">Point moves</h2><table id="d-moves"><thead><tr><th>when</th><th>point</th><th>moved</th><th></th></tr></thead><tbody></tbody></table></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmt = n => n == null ? '–' : Number(n).toLocaleString('en');
+const OP = { INSERT: 'added', UPDATE: 'edited', DELETE: 'deleted' };
+let ME = null, toastTimer;
+function toast(m){ const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3500); }
+async function api(path, body){
+  const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  if (r.status === 401) { showLogin(); throw new Error('signed out'); }
+  const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j;
+}
+const mapLink = (lat, lon) => lat == null ? '' : `<a href="/#z=17&lat=${lat}&lon=${lon}" target="_blank" title="show on map">map</a>`;
+
+function showLogin(){ ME = null; $('#login').classList.remove('hidden'); $('#app').classList.add('hidden'); $('#who').innerHTML = ''; }
+async function login(){
+  $('#login-err').textContent = ''; $('#login-btn').disabled = true;
+  try { ME = await api('/api/team/login', { user: $('#u').value, password: $('#p').value }); $('#p').value = ''; await showApp(); }
+  catch (e) { $('#login-err').textContent = e.message; }
+  finally { $('#login-btn').disabled = false; }
+}
+$('#login-btn').onclick = login; $('#p').onkeydown = e => { if (e.key === 'Enter') login(); };
+
+async function showApp(){
+  $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
+  $('#who').innerHTML = `<b>${ME.name}</b> <span class="pill">${ME.title}</span>${ME.can_undo ? ' <span class="pill">supervisor</span>' : ''} <a href="#" id="logout">sign out</a>`;
+  $('#logout').onclick = async e => { e.preventDefault(); await api('/api/team/logout', {}); showLogin(); };
+  await Promise.all([loadMe(), loadTeam()]);
+}
+
+function changesRows(rows, canUndo){
+  return rows.map(r => `<tr class="${r.undone ? 'undone' : r.flagged ? 'flagged' : ''}" title="#${r.id}${r.note ? ' — ' + r.note : ''}">
+    <td>${r.at.slice(5)}</td><td>${r.is_undo ? '↶ undo' : OP[r.op]}${r.flagged ? ' ⚑' : ''}</td>
+    <td>#${r.gid}${r.name ? ' ' + r.name : ''} ${mapLink(r.lat, r.lon)}</td><td>${r.ha ?? '–'}</td>
+    <td>${r.undone || r.is_undo ? '' : `${r.flagged ? '' : `<button class="sm" data-flag="${r.id}">flag</button>`}${canUndo ? ` <button class="sm danger" data-undo="${r.id}">undo</button>` : ''}`}</td></tr>`).join('')
+    || '<tr><td colspan="5" class="l" style="color:var(--muted)">none yet</td></tr>';
+}
+function movesRows(rows, canUndo){
+  return rows.map(r => `<tr class="${r.undone ? 'undone' : ''}"><td>${r.at.slice(5)}</td><td>${r.kobo_id} ${mapLink(r.lat, r.lon)}</td>
+    <td>${r.is_undo ? '↶ undo' : r.dist + ' m'}</td><td>${r.undone || r.is_undo || !canUndo ? '' : `<button class="sm danger" data-undo-move="${r.id}">undo</button>`}</td></tr>`).join('')
+    || '<tr><td colspan="4" class="l" style="color:var(--muted)">none yet</td></tr>';
+}
+function wireActions(root){
+  root.querySelectorAll('[data-flag]').forEach(b => b.onclick = async () => {
+    const note = prompt('Why is this change wrong? (optional)'); if (note === null) return;
+    try { await api('/api/team/action', { what: 'flag', id: +b.dataset.flag, note }); toast('flagged'); refresh(); } catch (e) { toast(e.message); } });
+  root.querySelectorAll('[data-undo]').forEach(b => b.onclick = async () => {
+    if (!confirm(`Undo change #${b.dataset.undo}? The polygon goes back to how it was before.`)) return;
+    try { await api('/api/team/action', { what: 'undo', id: +b.dataset.undo }); toast('undone'); refresh(); } catch (e) { toast(e.message); } });
+  root.querySelectorAll('[data-undo-move]').forEach(b => b.onclick = async () => {
+    if (!confirm(`Put point back where it was before move #${b.dataset.undoMove}?`)) return;
+    try { await api('/api/team/action', { what: 'undo_move', id: +b.dataset.undoMove }); toast('point restored'); refresh(); } catch (e) { toast(e.message); } });
+}
+let currentDetail = null;
+function refresh(){ loadMe(); loadTeam(); if (currentDetail) loadDetail(currentDetail); }
+
+async function loadMe(){
+  const s = await api('/api/team/stats'); const m = s.members.find(x => x.login === ME.login) || {};
+  const d = await api('/api/team/member/' + ME.login);
+  $('#me-tiles').innerHTML = `
+    <div class="tile"><div class="v" style="color:var(--poly)">${fmt(m.polygons)}</div><div class="l">polygons · ${fmt(m.ha)} ha</div></div>
+    <div class="tile"><div class="v">${fmt(m.today)}</div><div class="l">today</div></div>
+    <div class="tile"><div class="v">${fmt(m.week)}</div><div class="l">last 7 days</div></div>
+    <div class="tile"><div class="v">${fmt(m.moved)}</div><div class="l">points moved</div></div>
+    <div class="tile"><div class="v" style="color:${m.flagged ? 'var(--red)' : 'inherit'}">${fmt(m.flagged)}</div><div class="l">flagged for review</div></div>`;
+  $('#me-counties tbody').innerHTML = d.counties.map(c => `<tr><td>${c.county}</td><td>${fmt(c.n)}</td><td>${c.ha}</td></tr>`).join('') || '<tr><td colspan="3" style="color:var(--muted)">no polygons yet</td></tr>';
+  const mx = Math.max(...d.days.map(x => x.n), 1);
+  $('#me-days').innerHTML = d.days.map(x => `<div>${x.day.slice(5)}</div><div class="bar"><i style="width:${100*x.n/mx}%"></i></div><div>${fmt(x.n)} <span style="color:var(--muted)">(${x.ha} ha)</span></div>`).join('') || '<div style="color:var(--muted);grid-column:1/-1">nothing yet</div>';
+  $('#me-changes tbody').innerHTML = changesRows(d.changes, ME.can_undo); $('#me-moves tbody').innerHTML = movesRows(d.moves, ME.can_undo);
+  wireActions($('#me-changes')); wireActions($('#me-moves'));
+}
+
+async function loadTeam(){
+  const s = await api('/api/team/stats');
+  const others = s.members.filter(x => x.login !== ME.login);
+  if (!others.length) { $('#team').classList.add('hidden'); return; }
+  $('#team').classList.remove('hidden');
+  $('#team-title').textContent = ME.sees_all ? 'All teams' : 'My team';
+  $('#team-note').textContent = 'Click a name for details. ' + (ME.can_undo ? 'You can flag and undo changes.' : 'You can flag changes; supervisors undo them.');
+  const groups = {}; s.members.forEach(m => { const k = m.group === 'digitiser' ? `Team ${m.lead_name || m.lead || '?'}` : 'Coordination, QC & data'; (groups[k] = groups[k] || []).push(m); });
+  const tot = (arr, k) => arr.reduce((a, m) => a + (m[k] || 0), 0);
+  $('#team-tab tbody').innerHTML = Object.entries(groups).map(([g, arr]) => `<tr class="team-h"><td colspan="2">${g}</td><td style="text-align:right">${fmt(tot(arr,'polygons'))}</td><td style="text-align:right">${tot(arr,'ha').toFixed(1)}</td><td style="text-align:right">${fmt(tot(arr,'today'))}</td><td style="text-align:right">${fmt(tot(arr,'week'))}</td><td style="text-align:right">${fmt(tot(arr,'moved'))}</td><td style="text-align:right">${fmt(tot(arr,'flagged'))}</td><td></td></tr>` +
+    arr.map(m => `<tr class="click" data-login="${m.login}"><td>${m.name}</td><td class="l"><span class="pill">${m.title}</span></td><td>${fmt(m.polygons)}</td><td>${m.ha}</td><td>${fmt(m.today)}</td><td>${fmt(m.week)}</td><td>${fmt(m.moved)}</td><td style="color:${m.flagged ? 'var(--red)' : 'inherit'}">${fmt(m.flagged)}</td><td>${m.last ? m.last.slice(5) : '–'}</td></tr>`).join('')).join('');
+  $('#team-tab').querySelectorAll('tr.click').forEach(tr => tr.onclick = () => loadDetail(tr.dataset.login));
+  const fl = await api('/api/team/flagged');
+  $('#flag-tab tbody').innerHTML = fl.map(r => `<tr class="flagged"><td>${r.at.slice(5)}</td><td class="l">${r.by_name}</td><td>${OP[r.op]}</td><td>#${r.gid}${r.name ? ' ' + r.name : ''} ${mapLink(r.lat, r.lon)}</td><td class="l">${r.note || ''} <span style="color:var(--muted)">— ${r.flagged_by}</span></td><td>${ME.can_undo ? `<button class="sm danger" data-undo="${r.id}">undo</button>` : ''}</td></tr>`).join('')
+    || '<tr><td colspan="6" class="l" style="color:var(--muted)">nothing flagged</td></tr>';
+  wireActions($('#flag-tab'));
+}
+
+async function loadDetail(login){
+  currentDetail = login;
+  const s = await api('/api/team/stats'); const m = s.members.find(x => x.login === login) || { name: login };
+  const d = await api('/api/team/member/' + login);
+  $('#detail').classList.remove('hidden');
+  $('#detail-title').textContent = `${m.name} — ${fmt(m.polygons)} polygons, ${fmt(m.moved)} points moved` + (d.counties.length ? ' · ' + d.counties.map(c => `${c.county} ${c.n}`).join(', ') : '');
+  $('#d-changes tbody').innerHTML = changesRows(d.changes, ME.can_undo); $('#d-moves tbody').innerHTML = movesRows(d.moves, ME.can_undo);
+  wireActions($('#d-changes')); wireActions($('#d-moves'));
+  $('#detail').scrollIntoView({ behavior: 'smooth' });
+}
+
+(async () => { try { ME = await api('/api/team/me'); await showApp(); } catch (e) { showLogin(); } })();
+</script>
+</body>
+</html>

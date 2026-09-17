@@ -10,7 +10,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY dashboard.py dashboard.html build_qc.py export_qc.py target_counties.txt ./
+COPY dashboard.py dashboard.html team.html build_qc.py export_qc.py target_counties.txt ./
+COPY deploy/sql/ deploy/sql/
 
 RUN useradd --create-home --uid 1000 app && chown -R app:app /app
 USER app

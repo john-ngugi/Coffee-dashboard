@@ -5,6 +5,8 @@
 !requirements.txt
 !dashboard.py
 !dashboard.html
+!team.html
+!deploy/sql/*.sql
 !build_qc.py
 !export_qc.py
 !target_counties.txt
