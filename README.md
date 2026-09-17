@@ -49,7 +49,7 @@ Connect to `<server-ip>:5432`, database `coffee_eudr`:
 | Layer | Login | Notes |
 |---|---|---|
 | `coffee.farm_point_clean_public` | `coffee_reader` / `coffee_editor` | cleaned points only, PII stripped (key `kobo_id`) |
-| `coffee.digitized_polygon` | `coffee_editor` | editable; leave `gid`/`id` blank, area + timestamps fill automatically |
+| `coffee.digitized_polygon` | `coffee_editor` or personal login | editable; leave `gid`/`id` blank, area + timestamps fill automatically |
 | `coffee.farm_point_public` | `coffee_reader` / `coffee_editor` | all raw points, PII stripped |
 
 `farm_point_clean_public` is created by `build_qc.py`; on a database restored
@@ -58,6 +58,53 @@ from an older dump, create it once with:
 ```bash
 sudo docker compose exec -T db psql -U postgres -d coffee_eudr < deploy/sql/farm_point_clean_public.sql
 ```
+
+### Multi-user digitising: personal logins, history, undo
+
+Enable once per database (idempotent):
+
+```bash
+sudo docker compose exec -T db psql -U postgres -d coffee_eudr < deploy/sql/polygon_history.sql
+```
+
+This adds `coffee.digitized_polygon_history` (every insert / update / delete
+of a polygon with who, when, client IP and the full before/after row), a
+`coffee_supervisor` role, and these functions:
+
+| Function | Who | What |
+|---|---|---|
+| `coffee.flag_change(hist_id, note)` | any editor | mark a change for review (shows red on the dashboard) |
+| `coffee.undo_change(hist_id)` | supervisors | revert one change (re-adds a deleted polygon, restores an edited one, removes an added one) |
+| `coffee.undo_user_changes('user', since)` | supervisors | revert everything one person did since a timestamp, newest first |
+
+Undos are themselves logged and can be undone again. A single statement may
+not delete or update more than 25 polygons (`SET coffee.allow_bulk = 'on'` to
+override in a session). Editors no longer have write access to `farm_point_public`.
+
+Give every digitiser their own login so the history names the person, not a
+shared account:
+
+```bash
+sudo bash deploy/add_digitiser.sh alice bob carol        # editors
+sudo bash deploy/add_digitiser.sh --supervisor jane      # can undo
+```
+
+It prints one generated password per user. In QGIS they connect exactly like
+`coffee_editor`, with their own name and password.
+
+Typical supervisor session (psql or the QGIS DB Manager SQL window):
+
+```sql
+SELECT hist_id, changed_at, changed_by, op, gid, name, flagged, undone
+FROM coffee.digitized_polygon_activity ORDER BY hist_id DESC LIMIT 50;
+
+SELECT coffee.undo_change(123);                                   -- one change
+SELECT coffee.undo_user_changes('bob', now() - interval '2 hours'); -- all of bob's recent work
+```
+
+`coffee.digitized_polygon_activity` also loads in QGIS as a polygon layer
+(geometry = the shape before/after each change), useful for seeing what a
+deleted polygon looked like.
 
 ### Day-to-day
 

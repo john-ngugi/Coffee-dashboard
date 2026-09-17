@@ -16,6 +16,7 @@
 !/target_counties.txt
 !/deploy/
 !/deploy/restore_db.sh
+!/deploy/add_digitiser.sh
 !/deploy/init_https.sh
 !/deploy/init_selfsigned.sh
 !/deploy/nginx/

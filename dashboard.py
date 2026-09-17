@@ -278,6 +278,24 @@ def progress():
     ))
 
 
+@app.get("/api/history")
+def history():
+    """Recent polygon edits from coffee.digitized_polygon_history (see deploy/sql/polygon_history.sql)."""
+    if not query("SELECT to_regclass('coffee.digitized_polygon_activity')", one=True)[0]:
+        return jsonify(dict(enabled=False, rows=[], flagged=0))
+    lim = min(int(request.args.get("limit", 60)), 500)
+    rows = query("""
+      SELECT hist_id, gid, op, changed_at, changed_by, host(client_addr), name,
+             coalesce(area_ha_after, area_ha_before), flagged, flag_note, undone, undoes,
+             ST_Y(ST_Centroid(geom)), ST_X(ST_Centroid(geom))
+      FROM coffee.digitized_polygon_activity ORDER BY hist_id DESC LIMIT %s""", (lim,))
+    flagged = query("SELECT count(*) FROM coffee.digitized_polygon_history WHERE flagged AND undone_by IS NULL", one=True)[0]
+    return jsonify(dict(enabled=True, flagged=flagged, rows=[
+        dict(id=h, gid=g, op=op, at=str(at)[:16], by=by, ip=ip, name=n, ha=(float(ha) if ha is not None else None),
+             flagged=f, note=note, undone=u, is_undo=(uo is not None), lat=lat, lon=lon)
+        for h, g, op, at, by, ip, n, ha, f, note, u, uo, lat, lon in rows]))
+
+
 @app.get("/api/summary")
 def summary():
     status = dict(query("SELECT status, count(*) FROM coffee.farm_point_qc GROUP BY 1"))

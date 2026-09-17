@@ -119,6 +119,10 @@
     <table id="prog-who" style="margin-top:8px"><thead><tr><th>editor</th><th>polygons</th><th>ha</th><th>last save</th></tr></thead><tbody></tbody></table>
     <table id="prog-county" style="margin-top:8px"><thead><tr><th>county</th><th>clean pts</th><th>covered</th><th>%</th></tr></thead><tbody></tbody></table>
 
+    <h2>Recent polygon changes <span id="hist-flagged" style="color:var(--c-cluster);font-weight:normal"></span></h2>
+    <div class="note" id="hist-note"></div>
+    <table id="hist-tab"><thead><tr><th>when</th><th>who</th><th>op</th><th>polygon</th><th>ha</th></tr></thead><tbody></tbody></table>
+
     <h2>Flags — click to filter map</h2>
     <div class="bars" id="flagbars"></div>
     <div class="note">A point can carry several flags; it is "removed" if it carries at least one.</div>
@@ -365,8 +369,23 @@ async function loadProgress(){
     if (f) map.fitBounds(f.getBounds()); });
 }
 
+async function loadHistory(){
+  const h = await (await fetch('/api/history?limit=60')).json();
+  const note = document.getElementById('hist-note'), tb = document.querySelector('#hist-tab tbody');
+  if (!h.enabled) { note.textContent = 'history not enabled — run deploy/sql/polygon_history.sql'; tb.innerHTML = ''; return; }
+  note.textContent = 'every save in QGIS is recorded; supervisors undo with coffee.undo_change(id)';
+  document.getElementById('hist-flagged').textContent = h.flagged ? `· ${h.flagged} flagged` : '';
+  const OP = { INSERT: 'added', UPDATE: 'edited', DELETE: 'deleted' };
+  tb.innerHTML = h.rows.map(r => `<tr class="click" data-lat="${r.lat}" data-lon="${r.lon}" title="#${r.id}${r.note ? ' — ' + r.note : ''}${r.ip ? ' · from ' + r.ip : ''}"
+      style="${r.undone ? 'opacity:.45;text-decoration:line-through' : r.flagged ? 'background:rgba(227,73,72,.12)' : ''}">
+      <td>${r.at.slice(5)}</td><td>${r.by}</td><td>${r.is_undo ? '↶ undo' : OP[r.op]}${r.flagged ? ' ⚑' : ''}</td>
+      <td>#${r.gid}${r.name ? ' ' + r.name : ''}</td><td>${r.ha ?? '–'}</td></tr>`).join('')
+    || '<tr><td colspan="5" style="text-align:left;color:var(--muted)">no changes yet</td></tr>';
+  tb.querySelectorAll('tr.click').forEach(tr => tr.onclick = () => map.setView([+tr.dataset.lat, +tr.dataset.lon], 17));
+}
+
 async function loadSidebar(){
-  loadProgress();
+  loadProgress(); loadHistory();
   const s = await (await fetch('/api/summary')).json();
   const total = (s.status.clean || 0) + (s.status.removed || 0);
   document.getElementById('t-total').textContent = fmt(total);
@@ -435,7 +454,7 @@ function connectLive(){
   es.addEventListener('change', async e => {
     const d = JSON.parse(e.data); const when = new Date().toLocaleTimeString();
     setLive('busy', 'updating…');
-    if (d.tables.includes('digitized_polygon')) { await loadPolygons(); loadProgress(); toast(`Digitised polygons updated (${when})`); }
+    if (d.tables.includes('digitized_polygon')) { await loadPolygons(); loadProgress(); loadHistory(); toast(`Digitised polygons updated (${when})`); }
     if (d.tables.includes('farm_point_qc') || d.tables.includes('farm_point_hex')) {
       rebuildPoints(); hexLayer.redraw(); await loadSidebar();
       if (heatLayer) toggleHeat();
