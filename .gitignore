@@ -18,6 +18,7 @@
 !/deploy/
 !/deploy/restore_db.sh
 !/deploy/add_digitiser.sh
+!/deploy/update.sh
 !/deploy/make_team_credentials.py
 !/deploy/init_https.sh
 !/deploy/init_selfsigned.sh

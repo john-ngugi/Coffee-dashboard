@@ -135,10 +135,14 @@ deleted polygon looked like.
 ### Day-to-day
 
 ```bash
+sudo bash deploy/update.sh                         # git pull + rebuild + swap dashboard (~3 s downtime)
 sudo docker compose logs -f dashboard              # app logs
-sudo docker compose up -d --build dashboard        # redeploy after git pull
 sudo docker compose exec dashboard python build_qc.py --flags   # rerun QC
 ```
+
+`update.sh` builds the new image while the old container keeps serving, then
+swaps only the dashboard (`--no-deps`, so Postgres and nginx are untouched) and
+waits for it to answer. Open browser tabs reconnect on their own.
 
 ## Exposing it outside the LAN
 
