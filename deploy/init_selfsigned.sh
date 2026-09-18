@@ -27,4 +27,4 @@ docker compose run --rm --no-deps --entrypoint sh nginx -c "
     -out    /etc/letsencrypt/live/$DOMAIN/fullchain.pem"
 
 docker compose --profile public up -d nginx
-echo "== done: https://$DOMAIN  (browser will warn once about the self-signed cert)"
+echo "== done: https://$DOMAIN:${NGINX_HTTPS_PORT:-8443}  (browser will warn once about the self-signed cert)"

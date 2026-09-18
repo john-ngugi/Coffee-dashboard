@@ -1,11 +1,12 @@
-# Rendered by the nginx image at startup: ${DOMAIN} comes from .env.
+# Rendered by the nginx image at startup: ${DOMAIN} and ${HTTPS_PORT} come from .env
+# (host ports default to 8088 / 8443 so 80 and 443 stay free for other services).
 # HTTP: ACME challenge for certbot, everything else -> HTTPS.
 server {
     listen 80;
     server_name ${DOMAIN};
 
     location /.well-known/acme-challenge/ { root /var/www/certbot; }
-    location / { return 301 https://$host$request_uri; }
+    location / { return 301 https://$host:${HTTPS_PORT}$request_uri; }
 }
 
 server {

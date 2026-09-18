@@ -146,9 +146,11 @@ waits for it to answer. Open browser tabs reconnect on their own.
 
 ## Exposing it outside the LAN
 
-Both routes put nginx (HTTPS + username/password) in front of the app and need
-the router to forward TCP 80 and 443 to this server. Port 5055 itself is bound
-to `127.0.0.1` on the host, so nginx is the only way in from outside.
+Both routes put nginx (HTTPS + username/password) in front of the app. nginx
+listens on host ports **8443** (HTTPS) and **8088** (HTTP redirect) because 80/443
+are used by other systems; change with `NGINX_HTTPS_PORT` / `NGINX_HTTP_PORT` in
+`.env`. Port 5055 itself is bound to `127.0.0.1` on the host, so nginx is the
+only way in from outside.
 
 ### No domain: public IP + self-signed certificate
 
@@ -160,14 +162,15 @@ to `127.0.0.1` on the host, so nginx is the only way in from outside.
    sudo bash deploy/init_selfsigned.sh
    ```
 
-3. Open `https://<public IP>`. Browsers warn once about the certificate
+3. Open `https://<public IP>:8443`. Browsers warn once about the certificate
    ("Advanced -> Proceed"); the connection is still encrypted.
 4. From then on bring the stack up with `sudo docker compose --profile public up -d`.
 
 ### With a domain: Let's Encrypt
 
 Prerequisites: a domain (e.g. `coffee.example.com`) with an A record pointing
-at your public IP, and the router forwarding TCP 80 and 443 to this server.
+at your public IP, and the router forwarding external TCP 80 -> this server:8088
+and 443 -> this server:8443 (Let's Encrypt needs external port 80).
 
 1. In `.env` set `DOMAIN=coffee.example.com` and `LETSENCRYPT_EMAIL=you@example.com`.
 2. Bootstrap once (creates the basic-auth user `coffee`, obtains the certificate,

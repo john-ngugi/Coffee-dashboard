@@ -57,9 +57,10 @@ services:
       - dashboard
     environment:
       DOMAIN: ${DOMAIN:-localhost}
+      HTTPS_PORT: ${NGINX_HTTPS_PORT:-8443}
     ports:
-      - "80:80"
-      - "443:443"
+      - "${NGINX_HTTP_PORT:-8088}:80"      # redirect + ACME challenge
+      - "${NGINX_HTTPS_PORT:-8443}:443"    # the dashboard
     volumes:
       - ./deploy/nginx/dashboard.conf.template:/etc/nginx/templates/default.conf.template:ro
       - ./deploy/nginx/.htpasswd:/etc/nginx/.htpasswd:ro

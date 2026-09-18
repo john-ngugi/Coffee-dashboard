@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One-time bootstrap for nginx + Let's Encrypt.
 # Run from the repo root after setting DOMAIN and LETSENCRYPT_EMAIL in .env
-# and forwarding ports 80/443 on the router to this machine.
+# and forwarding router ports 80/443 to this machine's NGINX_HTTP_PORT/NGINX_HTTPS_PORT
+# (Let's Encrypt must reach the HTTP-01 challenge on external port 80).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a; . ./.env; set +a
@@ -30,4 +31,4 @@ docker compose --profile letsencrypt run --rm --entrypoint sh certbot -c "
 
 docker compose exec nginx nginx -s reload
 docker compose --profile letsencrypt up -d certbot
-echo "== done: https://$DOMAIN"
+echo "== done: https://$DOMAIN:${NGINX_HTTPS_PORT:-8443}"
