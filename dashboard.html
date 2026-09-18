@@ -53,6 +53,11 @@
   .bars .lab.click:hover, .bars .lab.on { color: var(--ink); font-weight: 600; }
   .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  /* long sidebar tables: fixed height, scroll inside, header stays put */
+  .scrollbox { max-height: 220px; overflow-y: auto; margin-top: 8px; border-bottom: 1px solid var(--grid); }
+  .scrollbox.tall { max-height: 320px; }
+  .scrollbox table { margin-top: 0 !important; }
+  .scrollbox thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; box-shadow: 0 1px 0 var(--grid); border-bottom: 0; }
   th { text-align: right; font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--grid); padding: 3px 4px; }
   th:first-child, td:first-child { text-align: left; }
   td { text-align: right; padding: 3px 4px; border-bottom: 1px solid var(--grid); }
@@ -116,13 +121,13 @@
     <h2>Digitising progress</h2>
     <div class="tiles" id="prog-tiles"></div>
     <div class="note" id="prog-note"></div>
-    <div class="hist" id="prog-days"></div>
-    <table id="prog-who" style="margin-top:8px"><thead><tr><th>editor</th><th>polygons</th><th>ha</th><th>last save</th></tr></thead><tbody></tbody></table>
-    <table id="prog-county" style="margin-top:8px"><thead><tr><th>county</th><th>clean pts</th><th>covered</th><th>%</th></tr></thead><tbody></tbody></table>
+    <div class="scrollbox" style="border-bottom:0"><div class="hist" id="prog-days"></div></div>
+    <div class="scrollbox"><table id="prog-who" style="margin-top:8px"><thead><tr><th>editor</th><th>polygons</th><th>ha</th><th>last save</th></tr></thead><tbody></tbody></table></div>
+    <div class="scrollbox"><table id="prog-county" style="margin-top:8px"><thead><tr><th>county</th><th>clean pts</th><th>covered</th><th>%</th></tr></thead><tbody></tbody></table></div>
 
     <h2>Recent polygon changes <span id="hist-flagged" style="color:var(--c-cluster);font-weight:normal"></span></h2>
     <div class="note" id="hist-note"></div>
-    <table id="hist-tab"><thead><tr><th>when</th><th>who</th><th>op</th><th>polygon</th><th>ha</th></tr></thead><tbody></tbody></table>
+    <div class="scrollbox"><table id="hist-tab"><thead><tr><th>when</th><th>who</th><th>op</th><th>polygon</th><th>ha</th></tr></thead><tbody></tbody></table></div>
 
     <h2>Flags — click to filter map</h2>
     <div class="bars" id="flagbars"></div>
@@ -144,11 +149,11 @@
     <div class="hist" id="h-cluster"></div>
 
     <h2>Counties (GIS boundary) — click to zoom</h2>
-    <table id="ctab"><thead><tr><th data-k="county">county</th><th data-k="n">points</th><th data-k="clean">clean</th><th data-k="removed">removed</th><th data-k="pct">% removed</th><th data-k="mismatch">form≠GIS</th></tr></thead><tbody></tbody></table>
+    <div class="scrollbox tall"><table id="ctab"><thead><tr><th data-k="county">county</th><th data-k="n">points</th><th data-k="clean">clean</th><th data-k="removed">removed</th><th data-k="pct">% removed</th><th data-k="mismatch">form≠GIS</th></tr></thead><tbody></tbody></table></div>
     <div class="note">Click a column header to sort (default: % removed, dirtiest first). Greyed counties are outside the target list. "form≠GIS": the county entered on the form differs from the boundary the point falls in.</div>
 
     <h2>Largest clusters — click to zoom</h2>
-    <table id="cltab"><thead><tr><th>county</th><th>points</th><th>enum.</th><th>factory</th></tr></thead><tbody></tbody></table>
+    <div class="scrollbox"><table id="cltab"><thead><tr><th>county</th><th>points</th><th>enum.</th><th>factory</th></tr></thead><tbody></tbody></table></div>
   </aside>
   <div id="map"></div>
 </div>
