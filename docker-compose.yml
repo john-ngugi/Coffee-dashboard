@@ -67,11 +67,12 @@ services:
     volumes:
       - ./deploy/nginx/dashboard.conf.template:/etc/nginx/templates/default.conf.template:ro
       - ./deploy/nginx/.htpasswd:/etc/nginx/.htpasswd:ro
+      # reloads nginx every 6h so a renewed certificate is actually served;
+      # the image runs everything in /docker-entrypoint.d/ before starting
+      - ./deploy/nginx/reload-loop.sh:/docker-entrypoint.d/99-reload-loop.sh:ro
       - letsencrypt:/etc/letsencrypt
       - certbot_www:/var/www/certbot:ro
-    # nginx reads the certificate once at start-up, so a renewed cert is only
-    # served after a reload: reload every 6h (cheap, keeps connections alive).
-    command: sh -c "while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g 'daemon off;'"
+
 
   certbot:
     image: certbot/certbot

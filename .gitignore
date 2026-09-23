@@ -26,6 +26,7 @@
 !/deploy/init_selfsigned.sh
 !/deploy/nginx/
 !/deploy/nginx/dashboard.conf.template
+!/deploy/nginx/reload-loop.sh
 !/deploy/sql/
 !/deploy/sql/*.sql
 
