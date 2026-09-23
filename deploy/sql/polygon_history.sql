@@ -98,7 +98,9 @@ CREATE TRIGGER digitized_polygon_bulk_update AFTER UPDATE ON coffee.digitized_po
 CREATE OR REPLACE FUNCTION coffee.flag_change(p_hist_id bigint, p_note text DEFAULT NULL) RETURNS void
 LANGUAGE sql SECURITY DEFINER SET search_path = coffee, public AS $$
     UPDATE coffee.digitized_polygon_history
-    SET flagged = true, flag_note = p_note, flagged_by = coffee.actor()
+    SET flagged = true, flag_note = p_note, flagged_by = coffee.actor(),
+        -- a new flag reopens the question (columns added by resolve_flag.sql)
+        resolved_at = NULL, resolved_by = NULL, resolve_note = NULL
     WHERE hist_id = p_hist_id;
 $$;
 REVOKE ALL ON FUNCTION coffee.flag_change(bigint, text) FROM PUBLIC;

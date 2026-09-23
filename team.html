@@ -226,6 +226,9 @@ function wireActions(root){
   root.querySelectorAll('[data-undo]').forEach(b => b.onclick = async () => {
     if (!confirm(`Undo change #${b.dataset.undo}? The polygon goes back to how it was before.`)) return;
     try { await api('/api/team/action', { what: 'undo', id: +b.dataset.undo }); toast('undone'); refresh(); } catch (e) { toast(e.message); } });
+  root.querySelectorAll('[data-resolve]').forEach(b => b.onclick = async () => {
+    const note = prompt('Closing this flag — what did you find? (optional)'); if (note === null) return;
+    try { await api('/api/team/action', { what: 'resolve', id: +b.dataset.resolve, note }); toast('flag resolved'); refresh(); } catch (e) { toast(e.message); } });
   root.querySelectorAll('[data-undo-move]').forEach(b => b.onclick = async () => {
     if (!confirm(`Put point back where it was before move #${b.dataset.undoMove}?`)) return;
     try { await api('/api/team/action', { what: 'undo_move', id: +b.dataset.undoMove }); toast('point restored'); refresh(); } catch (e) { toast(e.message); } });
@@ -262,7 +265,7 @@ async function loadTeam(){
     arr.map(m => `<tr class="click" data-login="${m.login}"><td>${m.name}</td><td class="l"><span class="pill">${m.title}</span></td><td>${fmt(m.polygons)}</td><td>${m.ha}</td><td>${fmt(m.today)}</td><td>${fmt(m.week)}</td><td>${fmt(m.moved)}</td><td style="color:${m.flagged ? 'var(--red)' : 'inherit'}">${fmt(m.flagged)}</td><td>${m.last ? m.last.slice(5) : '–'}</td></tr>`).join('')).join('');
   $('#team-tab').querySelectorAll('tr.click').forEach(tr => tr.onclick = () => loadDetail(tr.dataset.login));
   const fl = await api('/api/team/flagged');
-  $('#flag-tab tbody').innerHTML = fl.map(r => `<tr class="flagged"><td>${r.at.slice(5)}</td><td class="l">${r.by_name}</td><td>${OP[r.op]}</td><td>#${r.gid}${r.name ? ' ' + r.name : ''} ${mapLink(r.lat, r.lon)}</td><td class="l">${r.note || ''} <span style="color:var(--muted)">— ${r.flagged_by}</span></td><td>${ME.can_undo ? `<button class="sm danger" data-undo="${r.id}">undo</button>` : ''}</td></tr>`).join('')
+  $('#flag-tab tbody').innerHTML = fl.map(r => `<tr class="flagged"><td>${r.at.slice(5)}</td><td class="l">${r.by_name}</td><td>${OP[r.op]}</td><td>#${r.gid}${r.name ? ' ' + r.name : ''} ${mapLink(r.lat, r.lon)}</td><td class="l">${r.note || ''} <span style="color:var(--muted)">— ${r.flagged_by}</span></td><td>${ME.can_undo ? `<button class="sm" data-resolve="${r.id}">resolve</button> <button class="sm danger" data-undo="${r.id}">undo</button>` : ''}</td></tr>`).join('')
     || '<tr><td colspan="6" class="l" style="color:var(--muted)">nothing flagged</td></tr>';
   wireActions($('#flag-tab'));
 }
@@ -391,6 +394,7 @@ async function openPolygonPopup(gid, latlng){
   catch (e) { pop.setContent(`<b>Polygon #${gid}</b><p class="note">${e.message}</p>`); return; }
 
   const last = d.history.find(h => !h.undone && !h.is_undo);
+  const openFlag = d.history.find(h => h.open);          // flagged, not undone, not resolved
   const rows = [['digitised by', d.by_name], ['when', d.at], ['county', d.county || '–'],
                 ['area', d.area_ha + ' ha'],
                 ['survey points', `${fmt(d.n)} (${fmt(d.n_clean)} clean, ${fmt(d.trees_clean)} trees)`],
@@ -398,12 +402,20 @@ async function openPolygonPopup(gid, latlng){
   const hist = d.history.slice(0, 4).map(h =>
     `<div class="${h.undone ? 'undone' : ''}" style="font-size:11px;color:var(--ink-2)">
        ${h.at.slice(5)} · ${OP_LABEL[h.op] || h.op} by ${h.by_name}
-       ${h.flagged ? `<span class="pill" style="color:var(--red)">flagged${h.note ? ': ' + h.note : ''}</span>` : ''}
+       ${h.flagged ? `<span class="pill" style="color:${h.resolved_at ? 'var(--muted)' : 'var(--red)'}">flagged${h.note ? ': ' + h.note : ''}</span>` : ''}
+       ${h.resolved_at ? `<span class="pill">resolved by ${h.resolved_by}${h.resolve_note ? ': ' + h.resolve_note : ''}</span>` : ''}
        ${h.undone ? '<span class="pill">undone</span>' : ''}</div>`).join('');
 
+  // An open flag is a question waiting for an answer: a supervisor can close
+  // it (the flag stays in the history, marked resolved) or undo the change.
   const actions = !last ? '<span class="note">no change to act on</span>' : `
-    ${last.flagged ? '<span class="pill" style="color:var(--red)">already flagged</span>'
-                   : `<button class="sm" data-pop-flag="${last.id}">flag this change</button>`}
+    ${openFlag
+        ? `<span class="pill" style="color:var(--red)">flagged</span>
+           ${d.can_undo ? `<button class="sm" data-pop-resolve="${openFlag.id}">resolve</button>` : ''}`
+        : last.flagged
+          ? `<span class="pill">flag resolved</span>
+             ${d.can_undo ? `<button class="sm" data-pop-reopen="${last.id}">reopen</button>` : ''}`
+          : `<button class="sm" data-pop-flag="${last.id}">flag this change</button>`}
     ${d.can_undo ? `<button class="sm danger" data-pop-undo="${last.id}">undo</button>` : ''}`;
 
   pop.setContent(`<b>Polygon #${d.gid}</b>
@@ -417,6 +429,15 @@ async function openPolygonPopup(gid, latlng){
     const note = prompt('Why is this change wrong? (optional)'); if (note === null) return;
     try { await api('/api/team/action', { what: 'flag', id: +b.dataset.popFlag, note });
           toast('flagged'); tmap.closePopup(); refresh(); }
+    catch (e) { toast(e.message); } });
+  root.querySelectorAll('[data-pop-resolve]').forEach(b => b.onclick = async () => {
+    const note = prompt('Closing this flag — what did you find? (optional)'); if (note === null) return;
+    try { await api('/api/team/action', { what: 'resolve', id: +b.dataset.popResolve, note });
+          toast('flag resolved'); tmap.closePopup(); refresh(); }
+    catch (e) { toast(e.message); } });
+  root.querySelectorAll('[data-pop-reopen]').forEach(b => b.onclick = async () => {
+    try { await api('/api/team/action', { what: 'reopen', id: +b.dataset.popReopen });
+          toast('flag reopened'); tmap.closePopup(); refresh(); }
     catch (e) { toast(e.message); } });
   root.querySelectorAll('[data-pop-undo]').forEach(b => b.onclick = async () => {
     if (!confirm(`Undo the last change to polygon #${d.gid}? It goes back to how it was before.`)) return;

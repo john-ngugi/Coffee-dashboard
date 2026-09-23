@@ -209,6 +209,26 @@ def session_secret():
         c.close()
 
 
+def ensure_sql(probe, filename):
+    """Apply deploy/sql/<filename> once, when `probe` (a function or table the
+    file creates) is not there yet -- so a deploy needs no manual migration."""
+    f = HERE / "deploy" / "sql" / filename
+    if not f.exists():
+        return
+    c = _pg_connect(); c.autocommit = True
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT to_regproc(%s) IS NOT NULL OR to_regclass(%s) IS NOT NULL", (probe, probe))
+            if not cur.fetchone()[0]:
+                print(f"applying deploy/sql/{filename} ...", flush=True)
+                cur.execute(f.read_text(encoding="utf-8"))
+                print(f"{filename} applied", flush=True)
+    except Exception as e:
+        print(f"{filename} skipped:", e, flush=True)
+    finally:
+        c.close()
+
+
 def ensure_perf_objects():
     """Create the speed-up structures (deploy/sql/perf.sql) if they are missing,
     so a fresh deployment needs no manual migration step."""
@@ -697,7 +717,8 @@ def team_filters(me):
         where.append("(d.name ILIKE %s OR d.notes ILIKE %s)"); params += ["%" + q + "%"] * 2
     if request.args.get("flagged") == "1":
         where.append("""EXISTS (SELECT 1 FROM coffee.digitized_polygon_history h
-                                WHERE h.gid = d.gid AND h.flagged AND h.undone_by IS NULL)""")
+                                WHERE h.gid = d.gid AND h.flagged
+                                  AND h.undone_by IS NULL AND h.resolved_at IS NULL)""")
     bbox = request.args.get("bbox")
     if bbox:
         try:
@@ -720,7 +741,8 @@ def team_map():
       SELECT d.gid, d.created_by, coalesce(m.full_name, d.created_by), d.created_at,
              d.name, d.county, d.area_ha, d.n_points, d.n_clean,
              EXISTS (SELECT 1 FROM coffee.digitized_polygon_history h
-                     WHERE h.gid = d.gid AND h.flagged AND h.undone_by IS NULL) AS flagged,
+                     WHERE h.gid = d.gid AND h.flagged
+                       AND h.undone_by IS NULL AND h.resolved_at IS NULL) AS flagged,
              ST_AsGeoJSON(d.geom)::json
       FROM coffee.digitized_polygon d
       LEFT JOIN coffee.team_member m ON m.login = d.created_by
@@ -786,7 +808,8 @@ def team_polygon(gid):
         abort(403)
     hist = query("""SELECT a.hist_id, a.op, a.changed_at, a.changed_by,
                            coalesce(m.full_name, a.changed_by), a.flagged, a.flag_note,
-                           a.flagged_by, a.undone, a.undoes IS NOT NULL
+                           a.flagged_by, a.undone, a.undoes IS NOT NULL,
+                           a.resolved_at, a.resolved_by, a.resolve_note, a.flag_open
                     FROM coffee.digitized_polygon_activity a
                     LEFT JOIN coffee.team_member m ON m.login = a.changed_by
                     WHERE a.gid = %s ORDER BY a.hist_id DESC LIMIT 10""", (gid,))
@@ -796,8 +819,9 @@ def team_polygon(gid):
         trees_clean=int(row[10] or 0), lat=row[11], lon=row[12],
         can_undo=me["can_undo"],
         history=[dict(id=h, op=op, at=str(at)[:16], by=by, by_name=bn, flagged=f, note=note,
-                      flagged_by=fb, undone=u, is_undo=iu)
-                 for h, op, at, by, bn, f, note, fb, u, iu in hist]))
+                      flagged_by=fb, undone=u, is_undo=iu, open=op_,
+                      resolved_at=(str(ra)[:16] if ra else None), resolved_by=rb, resolve_note=rn)
+                 for h, op, at, by, bn, f, note, fb, u, iu, ra, rb, rn, op_ in hist]))
 
 
 @app.get("/api/team/map/options")
@@ -837,12 +861,15 @@ def team_map_options():
 
 @app.get("/api/team/flagged")
 def team_flagged():
-    me = team_user(); logins = visible_logins(me)
-    rows = query("""
+    me = team_user()
+    # a coordinator reviews every open flag, including ones on work saved by a
+    # login that is not on the roster (the original shapefile import)
+    where, params = ("TRUE", []) if me["sees_all"] else                     ("h.changed_by = ANY(%s)", [visible_logins(me)])
+    rows = query(f"""
       SELECT h.hist_id, h.gid, h.op, h.changed_at, h.changed_by, coalesce(m.full_name, h.changed_by),
              h.name, h.flag_note, h.flagged_by, ST_Y(ST_Centroid(h.geom)), ST_X(ST_Centroid(h.geom))
       FROM coffee.digitized_polygon_activity h LEFT JOIN coffee.team_member m ON m.login = h.changed_by
-      WHERE h.flagged AND NOT h.undone AND h.changed_by = ANY(%s) ORDER BY h.hist_id DESC LIMIT 100""", (logins,))
+      WHERE h.flag_open AND {where} ORDER BY h.hist_id DESC LIMIT 100""", params)
     return jsonify([dict(id=i, gid=g, op=op, at=str(at)[:16], by=by, by_name=bn, name=nm, note=note, flagged_by=fb, lat=lat, lon=lon)
                     for i, g, op, at, by, bn, nm, note, fb, lat, lon in rows])
 
@@ -873,6 +900,10 @@ def team_action():
         out, err = run_as(me["login"], "SELECT coffee.flag_change(%s, %s)", (ident, note))
     elif what == "undo":
         out, err = run_as(me["login"], "SELECT coffee.undo_change(%s)", (ident,))
+    elif what == "resolve":
+        out, err = run_as(me["login"], "SELECT coffee.resolve_flag(%s, %s)", (ident, note))
+    elif what == "reopen":
+        out, err = run_as(me["login"], "SELECT coffee.reopen_flag(%s)", (ident,))
     elif what == "undo_move":
         out, err = run_as(me["login"], "SELECT coffee.undo_point_move(%s)", (ident,))
     else:
@@ -1028,6 +1059,7 @@ def boot():
         print("could not read the shared session secret:", e, flush=True)
     ensure_triggers()
     ensure_perf_objects()
+    ensure_sql("coffee.resolve_flag", "resolve_flag.sql")
     threading.Thread(target=listener, daemon=True).start()
 
 
