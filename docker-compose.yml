@@ -69,6 +69,9 @@ services:
       - ./deploy/nginx/.htpasswd:/etc/nginx/.htpasswd:ro
       - letsencrypt:/etc/letsencrypt
       - certbot_www:/var/www/certbot:ro
+    # nginx reads the certificate once at start-up, so a renewed cert is only
+    # served after a reload: reload every 6h (cheap, keeps connections alive).
+    command: sh -c "while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g 'daemon off;'"
 
   certbot:
     image: certbot/certbot
