@@ -7,7 +7,8 @@ render without preloading, plus summary / histogram endpoints for the sidebar.
 
     python dashboard.py            # http://localhost:5055
 """
-import os, json, time, select, gzip, hashlib, functools
+import os, json, time, select, gzip, hashlib, functools, secrets
+from datetime import timedelta
 from pathlib import Path
 from flask import Flask, Response, request, jsonify, send_file, stream_with_context, session, abort
 import psycopg2, psycopg2.pool, psycopg2.extensions
@@ -42,8 +43,17 @@ class BlockingPool:
 # max_connections is the scarce resource, not throughput here.
 POOL = BlockingPool(int(os.environ.get("DASH_POOL", "6")))
 app = Flask(__name__, static_folder=None)
-# signs the /team login cookie; set DASH_SECRET in .env so logins survive restarts
-app.secret_key = os.environ.get("DASH_SECRET") or __import__("secrets").token_hex(32)
+# The /team login cookie is signed with this. It has to be the SAME value in
+# every gunicorn worker and across restarts -- a per-process random key means a
+# cookie signed by one worker is rejected by the other, which logs people out
+# at random. So: DASH_SECRET if set, otherwise one generated once and kept in
+# the database (coffee.app_config, readable only by the dashboard's own login).
+# Set in boot(); see session_secret().
+app.secret_key = os.environ.get("DASH_SECRET") or "unset-see-boot"
+app.config.update(
+    PERMANENT_SESSION_LIFETIME=timedelta(days=int(os.environ.get("DASH_SESSION_DAYS", "7"))),
+    SESSION_REFRESH_EACH_REQUEST=True,   # a day's work does not time out mid-shift
+)
 
 
 # ---------------------------------------------------------------- response cache
@@ -169,6 +179,34 @@ SUB_LOCK = threading.Lock()
 def _pg_connect():
     return psycopg2.connect(host=os.environ["PGHOST"], port=os.environ["PGPORT"], user=os.environ["PGUSER"],
                             password=os.environ["PGPASSWORD"], dbname=os.environ["PGDATABASE"])
+
+
+def session_secret():
+    """One signing key shared by every worker, kept across restarts.
+
+    Without this each gunicorn worker invents its own key at import, so a
+    session cookie signed by worker 1 fails in worker 2 and the person is
+    thrown back to the login screen on roughly half their clicks.
+    """
+    env = os.environ.get("DASH_SECRET")
+    if env:
+        return env
+    c = _pg_connect()
+    c.autocommit = True
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS coffee.app_config (
+                    key        text PRIMARY KEY,
+                    value      text NOT NULL,
+                    created_at timestamptz NOT NULL DEFAULT now());
+                REVOKE ALL ON coffee.app_config FROM PUBLIC;""")
+            cur.execute("""INSERT INTO coffee.app_config (key, value) VALUES ('session_secret', %s)
+                           ON CONFLICT (key) DO NOTHING""", (secrets.token_hex(32),))
+            cur.execute("SELECT value FROM coffee.app_config WHERE key = 'session_secret'")
+            return cur.fetchone()[0]
+    finally:
+        c.close()
 
 
 def ensure_perf_objects():
@@ -544,6 +582,7 @@ def team_login():
                          dbname=os.environ["PGDATABASE"], connect_timeout=5).close()
     except psycopg2.OperationalError:
         return jsonify(error="wrong login or password"), 401
+    session.permanent = True      # outlives closing the browser tab
     session["user"] = login
     try:
         return jsonify(team_user())
@@ -952,6 +991,10 @@ def boot():
         if _BOOTED:
             return
         _BOOTED = True
+    try:
+        app.secret_key = session_secret()
+    except Exception as e:
+        print("could not read the shared session secret:", e, flush=True)
     ensure_triggers()
     ensure_perf_objects()
     threading.Thread(target=listener, daemon=True).start()
