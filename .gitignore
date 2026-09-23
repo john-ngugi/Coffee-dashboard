@@ -20,6 +20,7 @@
 !/deploy/add_digitiser.sh
 !/deploy/update.sh
 !/deploy/check_db.sh
+!/deploy/connections.sh
 !/deploy/make_team_credentials.py
 !/deploy/init_https.sh
 !/deploy/init_selfsigned.sh

@@ -42,6 +42,9 @@ services:
       CARTO_KEY: ${CARTO_KEY:-}
       MAPTILER_KEY: ${MAPTILER_KEY:-}
       DASH_SECRET: ${DASH_SECRET:-}
+      # database connections per gunicorn worker (2 workers + 1 LISTEN each);
+      # lower it if Postgres runs out of slots -- see deploy/connections.sh
+      DASH_POOL: ${DASH_POOL:-6}
     ports:
       - "127.0.0.1:${DASH_HOST_PORT:-5055}:5055"   # LAN/host only; nginx fronts it
 

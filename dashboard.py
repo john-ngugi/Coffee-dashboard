@@ -36,7 +36,11 @@ class BlockingPool:
             c.rollback()
         self.q.put(c)
 
-POOL = BlockingPool(int(os.environ.get("DASH_POOL", "12")))
+# Each gunicorn worker keeps its own pool plus one LISTEN connection, and the
+# response cache means most requests never reach the database -- so keep this
+# small. 19 QGIS digitisers hold several connections each and the server's
+# max_connections is the scarce resource, not throughput here.
+POOL = BlockingPool(int(os.environ.get("DASH_POOL", "6")))
 app = Flask(__name__, static_folder=None)
 # signs the /team login cookie; set DASH_SECRET in .env so logins survive restarts
 app.secret_key = os.environ.get("DASH_SECRET") or __import__("secrets").token_hex(32)
