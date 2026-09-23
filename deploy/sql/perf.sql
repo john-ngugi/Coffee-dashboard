@@ -1,4 +1,5 @@
 -- perf.sql -- speed-up structures for the dashboard.  Safe to re-run.
+-- PERF VERSION: 2
 --
 --   sudo docker exec -i coffee-pg psql -U postgres -d coffee_eudr < deploy/sql/perf.sql
 --
@@ -55,6 +56,10 @@ GRANT SELECT ON coffee.farm_point_tile TO PUBLIC;
 ALTER TABLE coffee.digitized_polygon ADD COLUMN IF NOT EXISTS n_points    integer NOT NULL DEFAULT 0;
 ALTER TABLE coffee.digitized_polygon ADD COLUMN IF NOT EXISTS n_clean     integer NOT NULL DEFAULT 0;
 ALTER TABLE coffee.digitized_polygon ADD COLUMN IF NOT EXISTS trees_clean bigint  NOT NULL DEFAULT 0;
+ALTER TABLE coffee.digitized_polygon ADD COLUMN IF NOT EXISTS county      text;
+CREATE INDEX IF NOT EXISTS digitized_polygon_by_idx     ON coffee.digitized_polygon (created_by, created_at DESC);
+CREATE INDEX IF NOT EXISTS digitized_polygon_county_idx ON coffee.digitized_polygon (county);
+CREATE INDEX IF NOT EXISTS digitized_polygon_at_idx     ON coffee.digitized_polygon (created_at DESC);
 
 -- ------------------------------------------------------------ 3. the trigger
 -- Replaces the tracking trigger from build_qc.py: same job (stamp the points a
@@ -84,11 +89,13 @@ BEGIN
         UPDATE coffee.farm_point_tile t SET covered = true
         WHERE t.geom && NEW.geom AND ST_Intersects(t.geom, NEW.geom);
 
-        -- cache the counts on the polygon row itself
+        -- cache the counts and the county on the polygon row itself
         UPDATE coffee.digitized_polygon d SET
             n_points    = s.n,
             n_clean     = s.n_clean,
-            trees_clean = s.trees
+            trees_clean = s.trees,
+            county      = (SELECT c.counties FROM ref.kenya_counties c
+                           WHERE ST_Intersects(c.geom, ST_Centroid(NEW.geom)) LIMIT 1)
         FROM (SELECT count(*) n,
                      count(*) FILTER (WHERE q.status = 'clean') n_clean,
                      coalesce(sum(q.trees_total) FILTER (WHERE q.status = 'clean'), 0) trees
@@ -127,6 +134,12 @@ FROM (SELECT d2.gid,
       LEFT JOIN coffee.farm_point_qc q ON q.geom && d2.geom AND ST_Intersects(q.geom, d2.geom)
       GROUP BY d2.gid) s
 WHERE s.gid = d.gid;
+
+UPDATE coffee.digitized_polygon d SET county = c.counties
+FROM ref.kenya_counties c
+WHERE d.county IS NULL AND ST_Intersects(c.geom, ST_Centroid(d.geom));
+
+COMMENT ON TABLE coffee.farm_point_tile IS 'perf v2';
 
 COMMIT;
 

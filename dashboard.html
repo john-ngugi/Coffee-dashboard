@@ -480,6 +480,17 @@ async function loadSidebar(){
   document.querySelectorAll('#cltab tr.click').forEach(tr => tr.onclick = () => map.setView([+tr.dataset.lat, +tr.dataset.lon], 17));
 }
 
+// A link of the form /?poly=123 (the team portal's "open in the map dashboard")
+// zooms to that polygon and opens its details.
+function focusPolygonFromUrl(){
+  const gid = +new URLSearchParams(location.search).get('poly');
+  if (!gid || !polyLayer) return;
+  const l = polyLayer.getLayers().find(l => l.feature.properties.gid === gid);
+  if (!l) { toast(`Polygon #${gid} is not on the map`); return; }
+  map.fitBounds(l.getBounds().pad(2));
+  l.fire('click');
+}
+
 // ------------------------------------------------------------------ live updates
 let liveTimer;
 function toast(msg){ const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(liveTimer); liveTimer = setTimeout(() => t.classList.remove('show'), 4000); }
@@ -521,7 +532,8 @@ async function init(){
   addBasemap();                       // not awaited: the data layers draw first
 
   requestAnimationFrame(async () => {
-    loadPolygons();
+    await loadPolygons();
+    focusPolygonFromUrl();      // /?poly=123 -- the team portal links in like this
     const gj = await (await fetch('/api/counties')).json();
     countiesLayer = L.geoJSON(gj, { style: f => ({ color: f.properties.target ? '#52514e' : '#c3c2b7', weight: f.properties.target ? 1.2 : 0.8, fill: true, fillOpacity: f.properties.target ? 0 : 0.06, fillColor: '#898781', dashArray: f.properties.target ? null : '3 3' }),
       onEachFeature: (f, l) => l.bindTooltip(`${f.properties.name}: ${fmt(f.properties.n)} points, ${fmt(f.properties.n_clean)} clean${f.properties.target ? '' : ' — not in target list'}`, { sticky: true }) });

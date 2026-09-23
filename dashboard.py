@@ -176,12 +176,16 @@ def ensure_perf_objects():
     c = _pg_connect()
     c.autocommit = True          # perf.sql manages its own BEGIN/COMMIT
     try:
+        body = sql_file.read_text(encoding="utf-8")
+        want = "perf v" + (body.split("-- PERF VERSION:")[1].split("\n")[0].strip()
+                           if "-- PERF VERSION:" in body else "1")
         with c.cursor() as cur:
-            cur.execute("SELECT to_regclass('coffee.farm_point_tile')")
-            if cur.fetchone()[0] is None:
-                print("applying deploy/sql/perf.sql ...", flush=True)
-                cur.execute(sql_file.read_text(encoding="utf-8"))
-                print("perf structures created", flush=True)
+            cur.execute("""SELECT obj_description(to_regclass('coffee.farm_point_tile'))""")
+            have = cur.fetchone()[0]
+            if have != want:
+                print(f"applying deploy/sql/perf.sql ({have or 'nothing'} -> {want}) ...", flush=True)
+                cur.execute(body)
+                print("perf structures up to date", flush=True)
     except Exception as e:
         print("perf.sql skipped:", e, flush=True)
     finally:
@@ -609,6 +613,141 @@ def team_member(login):
                  for i, g, op, at, nm, ha, f, note, u, iu, lat, lon in changes],
         moves=[dict(id=i, kobo_id=k, at=str(at)[:16], dist=int(d), undone=u, is_undo=iu, lat=lat, lon=lon)
                for i, k, at, d, u, iu, lat, lon in moves]))
+
+
+def team_filters(me):
+    """Shared filter for the team map and its figures: who / date / county / text.
+    `who` is always intersected with what this user is allowed to see, so a
+    crafted request cannot widen it."""
+    asked = [w for w in (request.args.get("who") or "").split(",") if w]
+    if me["sees_all"]:
+        # a coordinator sees every polygon, including ones saved by an admin
+        # login that is not on the roster (the original shapefile import)
+        logins = asked or None
+    else:
+        allowed = visible_logins(me)
+        logins = [w for w in asked if w in allowed] or allowed
+    where, params = [], []
+    if logins is not None:
+        where.append("d.created_by = ANY(%s)"); params.append(logins)
+
+    for arg, clause in (("from", "d.created_at >= %s"), ("to", "d.created_at < (%s::date + 1)")):
+        v = request.args.get(arg)
+        if v:
+            where.append(clause); params.append(v)
+    county = request.args.get("county")
+    if county:
+        where.append("d.county = %s"); params.append(county)
+    q = (request.args.get("q") or "").strip()
+    if q:
+        where.append("(d.name ILIKE %s OR d.notes ILIKE %s)"); params += ["%" + q + "%"] * 2
+    if request.args.get("flagged") == "1":
+        where.append("""EXISTS (SELECT 1 FROM coffee.digitized_polygon_history h
+                                WHERE h.gid = d.gid AND h.flagged AND h.undone_by IS NULL)""")
+    bbox = request.args.get("bbox")
+    if bbox:
+        try:
+            w, so, e, no = [float(v) for v in bbox.split(",")][:4]
+            where.append("d.geom && ST_MakeEnvelope(%s,%s,%s,%s,4326)"); params += [w, so, e, no]
+        except ValueError:
+            pass
+    return (" AND ".join(where) or "TRUE"), params, logins
+
+
+MAP_LIMIT = 4000
+
+
+@app.get("/api/team/map")
+def team_map():
+    """Polygons for the team map, filtered by person, date, county or text."""
+    me = team_user()
+    where, params, _ = team_filters(me)
+    rows = query(f"""
+      SELECT d.gid, d.created_by, coalesce(m.full_name, d.created_by), d.created_at,
+             d.name, d.county, d.area_ha, d.n_points, d.n_clean,
+             EXISTS (SELECT 1 FROM coffee.digitized_polygon_history h
+                     WHERE h.gid = d.gid AND h.flagged AND h.undone_by IS NULL) AS flagged,
+             ST_AsGeoJSON(d.geom)::json
+      FROM coffee.digitized_polygon d
+      LEFT JOIN coffee.team_member m ON m.login = d.created_by
+      WHERE {where}
+      ORDER BY d.created_at DESC LIMIT {MAP_LIMIT + 1}""", params)
+    capped = len(rows) > MAP_LIMIT
+    return jsonify({"type": "FeatureCollection", "capped": capped, "limit": MAP_LIMIT,
+                    "features": [
+        {"type": "Feature", "geometry": gj,
+         "properties": dict(gid=gid, by=by, by_name=bn, at=str(at)[:16], name=nm, county=co,
+                            area_ha=float(ha or 0), n=n, n_clean=nc, flagged=fl)}
+        for gid, by, bn, at, nm, co, ha, n, nc, fl, gj in rows[:MAP_LIMIT]]})
+
+
+@app.get("/api/team/map/summary")
+def team_map_summary():
+    """The figures beside the map, under exactly the same filters."""
+    me = team_user()
+    where, params, logins = team_filters(me)
+    tot = query(f"""
+      SELECT count(*), coalesce(round(sum(d.area_ha),1),0), coalesce(sum(d.n_points),0),
+             coalesce(sum(d.n_clean),0), count(DISTINCT d.created_by),
+             min(d.created_at)::date, max(d.created_at)::date,
+             count(*) FILTER (WHERE d.n_points = 0)
+      FROM coffee.digitized_polygon d WHERE {where}""", params, one=True)
+    who = query(f"""
+      SELECT d.created_by, coalesce(m.full_name, d.created_by), count(*),
+             coalesce(round(sum(d.area_ha),1),0), coalesce(sum(d.n_clean),0), max(d.created_at)
+      FROM coffee.digitized_polygon d
+      LEFT JOIN coffee.team_member m ON m.login = d.created_by
+      WHERE {where} GROUP BY 1,2 ORDER BY 3 DESC""", params)
+    days = query(f"""SELECT d.created_at::date, count(*), coalesce(round(sum(d.area_ha),1),0)
+                     FROM coffee.digitized_polygon d WHERE {where}
+                     GROUP BY 1 ORDER BY 1 DESC LIMIT 30""", params)
+    counties = query(f"""SELECT coalesce(d.county,'(outside)'), count(*), coalesce(round(sum(d.area_ha),1),0)
+                         FROM coffee.digitized_polygon d WHERE {where}
+                         GROUP BY 1 ORDER BY 2 DESC""", params)
+    return jsonify(dict(
+        polygons=tot[0], area_ha=float(tot[1]), points=int(tot[2]), clean=int(tot[3]),
+        people=tot[4], first=str(tot[5]) if tot[5] else None, last=str(tot[6]) if tot[6] else None,
+        empty=tot[7],
+        who=[dict(login=a, name=b, n=n, ha=float(h), clean=int(c), last=str(l)[:16])
+             for a, b, n, h, c, l in who],
+        days=[dict(day=str(d), n=n, ha=float(h)) for d, n, h in days],
+        counties=[dict(county=c, n=n, ha=float(h)) for c, n, h in counties],
+    ))
+
+
+@app.get("/api/team/map/options")
+def team_map_options():
+    """What the filter dropdowns should offer this user."""
+    me = team_user()
+    logins = visible_logins(me)
+    if me["sees_all"]:
+        # every login that has saved a polygon, named where it is on the roster
+        people = query("""SELECT d.created_by, coalesce(m.full_name, d.created_by),
+                                 coalesce(m.title, 'not on the roster'),
+                                 count(*), max(d.created_at)::date
+                          FROM coffee.digitized_polygon d
+                          LEFT JOIN coffee.team_member m ON m.login = d.created_by
+                          GROUP BY 1,2,3 ORDER BY count(*) DESC""")
+        counties = query("""SELECT county, count(*) FROM coffee.digitized_polygon
+                            WHERE county IS NOT NULL GROUP BY 1 ORDER BY 2 DESC""")
+        span = query("SELECT min(created_at)::date, max(created_at)::date FROM coffee.digitized_polygon", one=True)
+    else:
+        people = query("""SELECT m.login, coalesce(m.full_name, m.login), m.title,
+                                 count(d.gid), max(d.created_at)::date
+                          FROM coffee.team_member m
+                          LEFT JOIN coffee.digitized_polygon d ON d.created_by = m.login
+                          WHERE m.login = ANY(%s) GROUP BY 1,2,3 ORDER BY m.seq""", (logins,))
+        counties = query("""SELECT county, count(*) FROM coffee.digitized_polygon
+                            WHERE created_by = ANY(%s) AND county IS NOT NULL
+                            GROUP BY 1 ORDER BY 2 DESC""", (logins,))
+        span = query("""SELECT min(created_at)::date, max(created_at)::date
+                        FROM coffee.digitized_polygon WHERE created_by = ANY(%s)""", (logins,), one=True)
+    return jsonify(dict(
+        me=me,
+        people=[dict(login=a, name=b, title=t, n=n, last=str(l) if l else None)
+                for a, b, t, n, l in people],
+        counties=[dict(county=c, n=n) for c, n in counties],
+        first=str(span[0]) if span[0] else None, last=str(span[1]) if span[1] else None))
 
 
 @app.get("/api/team/flagged")

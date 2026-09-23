@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Coffee digitising — team</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.min.js"></script>
 <style>
   :root {
     color-scheme: light;
@@ -52,6 +54,33 @@
   #toast { position: fixed; bottom: 20px; right: 16px; background: var(--ink); color: #fff; padding: 8px 12px; border-radius: 6px; font-size: 12px; opacity: 0; transition: opacity .3s; pointer-events: none; }
   #toast.show { opacity: .92; }
   .hidden { display: none; }
+
+  /* ---- team map ------------------------------------------------------- */
+  main { max-width: 1400px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
+  .filters .f { display: flex; flex-direction: column; gap: 3px; }
+  .filters label { margin: 0; font-size: 11px; color: var(--muted); }
+  .filters select, .filters input { font: inherit; padding: 5px 8px; border: 1px solid var(--border);
+    border-radius: 5px; background: #fff; width: auto; min-width: 130px; }
+  .filters input[type=date] { min-width: 140px; }
+  .filters .chips { display: flex; gap: 6px; }
+  .chip { padding: 4px 10px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface);
+    cursor: pointer; font-size: 12px; color: var(--ink-2); }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .maprow { display: grid; grid-template-columns: 1fr 300px; gap: 16px; margin-top: 12px; }
+  @media (max-width: 1000px) { .maprow { grid-template-columns: 1fr; } }
+  #teammap { height: 520px; border-radius: 8px; border: 1px solid var(--border); background: var(--plane); }
+  .mapside { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  .mapside .card { padding: 10px 12px; }
+  .mapside h3 { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+    margin: 0 0 6px; font-weight: 600; }
+  .mapside .scrolly { max-height: 190px; overflow-y: auto; margin: 0 -12px; padding: 0 12px; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  .kv { display: grid; grid-template-columns: 1fr max-content; gap: 2px 10px; font-size: 12px; }
+  .kv .k { color: var(--ink-2); } .kv .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .leaflet-popup-content { font: 12px/1.45 system-ui, sans-serif; margin: 10px 12px; }
+  .leaflet-popup-content dl { display: grid; grid-template-columns: max-content 1fr; gap: 1px 10px; margin: 0; }
+  .leaflet-popup-content dt { color: var(--muted); } .leaflet-popup-content dd { margin: 0; }
 </style>
 </head>
 <body>
@@ -81,6 +110,46 @@
     <div class="grid2" style="margin-top:12px">
       <div class="card scroll"><h2 style="margin-top:0">My recent polygon changes</h2><div class="body"><table id="me-changes"><thead><tr><th>when</th><th>op</th><th>polygon</th><th>ha</th><th></th></tr></thead><tbody></tbody></table></div></div>
       <div class="card scroll"><h2 style="margin-top:0">My recent point moves</h2><div class="body"><table id="me-moves"><thead><tr><th>when</th><th>point</th><th>moved</th><th></th></tr></thead><tbody></tbody></table></div></div>
+    </div>
+
+    <div id="mapsec" class="hidden">
+      <h2>Where the team has been digitising</h2>
+      <div class="card">
+        <div class="filters">
+          <div class="f"><label for="f-who">Digitiser</label>
+            <select id="f-who"><option value="">everyone I can see</option></select></div>
+          <div class="f"><label for="f-from">From</label><input type="date" id="f-from"></div>
+          <div class="f"><label for="f-to">To</label><input type="date" id="f-to"></div>
+          <div class="f"><label for="f-county">County</label>
+            <select id="f-county"><option value="">all counties</option></select></div>
+          <div class="f"><label for="f-q">Polygon name / note</label>
+            <input type="search" id="f-q" placeholder="search…" style="min-width:160px"></div>
+          <div class="f"><label>Quick range</label>
+            <div class="chips">
+              <span class="chip" data-range="today">today</span>
+              <span class="chip" data-range="7">7 days</span>
+              <span class="chip" data-range="30">30 days</span>
+              <span class="chip" data-range="all">all</span>
+            </div></div>
+          <div class="f"><label>&nbsp;</label>
+            <div class="chips">
+              <span class="chip" id="f-flagged" data-flagged="0">flagged only</span>
+              <button class="sm" id="f-reset">reset</button>
+            </div></div>
+        </div>
+        <p class="note" id="map-note" style="margin-top:10px"></p>
+        <div class="maprow">
+          <div id="teammap"></div>
+          <div class="mapside">
+            <div class="card"><h3>Filtered totals</h3><div class="kv" id="map-totals"></div></div>
+            <div class="card"><h3>By digitiser <span class="note" style="font-weight:400">— click to isolate</span></h3>
+              <div class="scrolly"><table id="map-who"><tbody></tbody></table></div></div>
+            <div class="card"><h3>By county</h3>
+              <div class="scrolly"><table id="map-counties"><tbody></tbody></table></div></div>
+            <div class="card"><h3>Per day</h3><div class="scrolly"><div class="bars" id="map-days"></div></div></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div id="team" class="hidden">
@@ -129,7 +198,11 @@ async function showApp(){
   $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
   $('#who').innerHTML = `<b>${ME.name}</b> <span class="pill">${ME.title}</span>${ME.can_undo ? ' <span class="pill">supervisor</span>' : ''} <a href="#" id="logout">sign out</a>`;
   $('#logout').onclick = async e => { e.preventDefault(); await api('/api/team/logout', {}); showLogin(); };
+  $('#mapsec').classList.remove('hidden');
   await Promise.all([loadMe(), loadTeam()]);
+  await loadMapOptions();
+  wireMapFilters();
+  loadMap(true);
 }
 
 function changesRows(rows, canUndo){
@@ -156,7 +229,7 @@ function wireActions(root){
     try { await api('/api/team/action', { what: 'undo_move', id: +b.dataset.undoMove }); toast('point restored'); refresh(); } catch (e) { toast(e.message); } });
 }
 let currentDetail = null;
-function refresh(){ loadMe(); loadTeam(); if (currentDetail) loadDetail(currentDetail); }
+function refresh(){ loadMe(); loadTeam(); loadMap(false); if (currentDetail) loadDetail(currentDetail); }
 
 async function loadMe(){
   const s = await api('/api/team/stats'); const m = s.members.find(x => x.login === ME.login) || {};
@@ -192,8 +265,155 @@ async function loadTeam(){
   wireActions($('#flag-tab'));
 }
 
+// ---------------------------------------------------------------- team map
+// One map of the polygons the signed-in person is allowed to see, with the
+// filters (who / dates / county / text) driving both the map and the figures
+// beside it, so a coordinator can look at one digitiser's work on its own.
+const PERSON_COLOURS = ['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#008300','#4a3aa7','#e34948'];
+let tmap, tlayer, tbase, colourOf = {}, mapOptions = null, mapTimer;
+
+function filterArgs(){
+  const p = new URLSearchParams();
+  const who = $('#f-who').value, from = $('#f-from').value, to = $('#f-to').value,
+        county = $('#f-county').value, q = $('#f-q').value.trim();
+  if (who) p.set('who', who);
+  if (from) p.set('from', from);
+  if (to) p.set('to', to);
+  if (county) p.set('county', county);
+  if (q) p.set('q', q);
+  if ($('#f-flagged').dataset.flagged === '1') p.set('flagged', '1');
+  return p.toString();
+}
+
+function initMap(){
+  if (tmap) return;
+  tmap = L.map('teammap', { preferCanvas: true }).setView([-0.4, 36.9], 7);
+  fetch('/api/config').then(r => r.json()).then(cfg => {
+    tbase = cfg.maptiler_key
+      ? L.tileLayer('https://api.maptiler.com/maps/hybrid-v4/{z}/{x}/{y}.jpg?key=' + cfg.maptiler_key,
+          { attribution: '© MapTiler © OpenStreetMap contributors', tileSize: 512, zoomOffset: -1, maxZoom: 22 })
+      : L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          { attribution: '© OpenStreetMap contributors', maxZoom: 19 });
+    tbase.addTo(tmap);
+  });
+}
+
+async function loadMapOptions(){
+  mapOptions = await api('/api/team/map/options');
+  $('#f-who').innerHTML = '<option value="">everyone I can see</option>' +
+    mapOptions.people.map(p => `<option value="${p.login}">${p.name} (${fmt(p.n)})</option>`).join('');
+  $('#f-county').innerHTML = '<option value="">all counties</option>' +
+    mapOptions.counties.map(c => `<option value="${c.county}">${c.county} (${fmt(c.n)})</option>`).join('');
+  // one stable colour per person, in the order they appear in the roster
+  mapOptions.people.forEach((p, i) => colourOf[p.login] = PERSON_COLOURS[i % PERSON_COLOURS.length]);
+}
+
+function polyColour(f){
+  // colour by person while that reads (<= 8 on screen), else one colour
+  const few = Object.keys(shownPeople).length <= PERSON_COLOURS.length;
+  if (f.properties.flagged) return 'var(--red)';
+  return few ? (colourOf[f.properties.by] || 'var(--poly)') : 'var(--poly)';
+}
+let shownPeople = {};
+
+async function loadMap(fit){
+  initMap();
+  const qs = filterArgs();
+  const [gj, sum] = await Promise.all([
+    api('/api/team/map?' + qs), api('/api/team/map/summary?' + qs)]);
+
+  shownPeople = {};
+  gj.features.forEach(f => shownPeople[f.properties.by] = true);
+
+  if (tlayer) tmap.removeLayer(tlayer);
+  tlayer = L.geoJSON(gj, {
+    style: f => ({ color: f.properties.flagged ? '#e34948' : (colourOf[f.properties.by] || '#ff2a2a'),
+                   weight: 2.5, fillColor: colourOf[f.properties.by] || '#ff2a2a',
+                   fillOpacity: f.properties.flagged ? 0.35 : 0.15 }),
+    onEachFeature: (f, l) => { const p = f.properties;
+      l.bindTooltip(`#${p.gid}${p.name ? ' · ' + p.name : ''} — ${p.area_ha} ha<br>${p.by_name} · ${p.at}`, { sticky: true });
+      l.on('click', () => L.popup({ maxWidth: 320 }).setLatLng(l.getBounds().getCenter()).setContent(
+        `<b>Polygon #${p.gid}</b>${p.flagged ? ' <span class="pill" style="color:var(--red)">flagged</span>' : ''}<dl>
+          <dt>digitised by</dt><dd>${p.by_name}</dd>
+          <dt>when</dt><dd>${p.at}</dd>
+          <dt>county</dt><dd>${p.county || '–'}</dd>
+          <dt>area</dt><dd>${p.area_ha} ha</dd>
+          <dt>survey points</dt><dd>${fmt(p.n)} (${fmt(p.n_clean)} clean)</dd>
+          <dt>name</dt><dd>${p.name || '–'}</dd></dl>
+         <a href="/?poly=${p.gid}" target="_blank">open in the map dashboard</a>`).openOn(tmap)); }
+  }).addTo(tmap);
+
+  if (fit && gj.features.length) {
+    try { tmap.fitBounds(tlayer.getBounds().pad(0.15)); } catch (e) {}
+  }
+  renderMapSide(sum, gj);
+}
+
+function renderMapSide(s, gj){
+  const few = Object.keys(shownPeople).length <= PERSON_COLOURS.length;
+  $('#map-note').innerHTML = s.polygons
+    ? `${fmt(s.polygons)} polygons · ${fmt(s.area_ha)} ha · ${fmt(s.people)} ${s.people === 1 ? 'digitiser' : 'digitisers'}`
+      + (s.first ? ` · ${s.first}${s.last !== s.first ? ' → ' + s.last : ''}` : '')
+      + (gj.capped ? ` <b style="color:var(--red)">— showing the newest ${fmt(gj.limit)}; narrow the filters</b>` : '')
+      + (few ? ' · each digitiser has their own colour' : ' · too many people on screen to colour apart — pick one')
+    : 'Nothing matches these filters.';
+  $('#map-totals').innerHTML = [
+    ['Polygons', fmt(s.polygons)], ['Hectares', fmt(s.area_ha)],
+    ['Survey points inside', fmt(s.points)], ['of which clean', fmt(s.clean)],
+    ['Polygons with no point', fmt(s.empty)], ['Digitisers', fmt(s.people)]
+  ].map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join('');
+
+  $('#map-who tbody').innerHTML = s.who.map(w => `<tr class="click" data-who="${w.login}">
+      <td class="l"><span class="sw" style="background:${colourOf[w.login] || 'var(--poly)'}"></span>${w.name}</td>
+      <td>${fmt(w.n)}</td><td>${w.ha}&nbsp;ha</td><td>${w.last ? w.last.slice(5) : '–'}</td></tr>`).join('')
+    || '<tr><td class="l" style="color:var(--muted)">nobody</td></tr>';
+  $('#map-who').querySelectorAll('tr.click').forEach(tr => tr.onclick = () => {
+    $('#f-who').value = $('#f-who').value === tr.dataset.who ? '' : tr.dataset.who; loadMap(true); });
+
+  $('#map-counties tbody').innerHTML = s.counties.map(c => `<tr class="click" data-county="${c.county}">
+      <td class="l">${c.county}</td><td>${fmt(c.n)}</td><td>${c.ha}&nbsp;ha</td></tr>`).join('')
+    || '<tr><td class="l" style="color:var(--muted)">none</td></tr>';
+  $('#map-counties').querySelectorAll('tr.click').forEach(tr => tr.onclick = () => {
+    const c = tr.dataset.county;
+    $('#f-county').value = $('#f-county').value === c ? '' : c; loadMap(true); });
+
+  const mx = Math.max(...s.days.map(d => d.n), 1);
+  $('#map-days').innerHTML = s.days.map(d => `<div>${d.day.slice(5)}</div>
+      <div class="bar"><i style="width:${100*d.n/mx}%"></i></div>
+      <div>${fmt(d.n)} <span style="color:var(--muted)">(${d.ha} ha)</span></div>`).join('')
+    || '<div style="color:var(--muted);grid-column:1/-1">nothing in range</div>';
+}
+
+function wireMapFilters(){
+  const reload = fit => { clearTimeout(mapTimer); mapTimer = setTimeout(() => loadMap(fit), 200); };
+  ['#f-who', '#f-from', '#f-to', '#f-county'].forEach(sel => $(sel).onchange = () => reload(true));
+  $('#f-q').oninput = () => reload(false);
+  $('#f-flagged').onclick = e => {
+    const on = e.target.dataset.flagged === '1';
+    e.target.dataset.flagged = on ? '0' : '1'; e.target.classList.toggle('on', !on); reload(true);
+  };
+  document.querySelectorAll('.chip[data-range]').forEach(ch => ch.onclick = () => {
+    document.querySelectorAll('.chip[data-range]').forEach(c => c.classList.remove('on'));
+    ch.classList.add('on');
+    const r = ch.dataset.range, today = new Date().toISOString().slice(0, 10);
+    if (r === 'all') { $('#f-from').value = ''; $('#f-to').value = ''; }
+    else if (r === 'today') { $('#f-from').value = today; $('#f-to').value = today; }
+    else { const d = new Date(); d.setDate(d.getDate() - (+r - 1));
+           $('#f-from').value = d.toISOString().slice(0, 10); $('#f-to').value = today; }
+    reload(true);
+  });
+  $('#f-reset').onclick = () => {
+    $('#f-who').value = ''; $('#f-county').value = ''; $('#f-q').value = '';
+    $('#f-from').value = ''; $('#f-to').value = '';
+    $('#f-flagged').dataset.flagged = '0'; $('#f-flagged').classList.remove('on');
+    document.querySelectorAll('.chip[data-range]').forEach(c => c.classList.remove('on'));
+    loadMap(true);
+  };
+}
+
 async function loadDetail(login){
   currentDetail = login;
+  if ($('#f-who').value !== login) { $('#f-who').value = login; loadMap(true); }
   const s = await api('/api/team/stats'); const m = s.members.find(x => x.login === login) || { name: login };
   const d = await api('/api/team/member/' + login);
   $('#detail').classList.remove('hidden');
