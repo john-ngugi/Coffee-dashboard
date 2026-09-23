@@ -1,5 +1,5 @@
 -- perf.sql -- speed-up structures for the dashboard.  Safe to re-run.
--- PERF VERSION: 2
+-- PERF VERSION: 3
 --
 --   sudo docker exec -i coffee-pg psql -U postgres -d coffee_eudr < deploy/sql/perf.sql
 --
@@ -49,6 +49,9 @@ CREATE INDEX IF NOT EXISTS farm_point_tile_status_idx ON coffee.farm_point_tile 
 CREATE INDEX IF NOT EXISTS farm_point_tile_county_idx ON coffee.farm_point_tile (county);
 CREATE INDEX IF NOT EXISTS farm_point_tile_cov_idx    ON coffee.farm_point_tile (covered);
 CREATE INDEX IF NOT EXISTS farm_point_tile_flags_idx  ON coffee.farm_point_tile USING gin (flags);
+-- covered points are a few hundred out of 385k: a partial index lets the
+-- dashboard count them live on every request instead of reading a snapshot
+CREATE INDEX IF NOT EXISTS farm_point_tile_covered_idx ON coffee.farm_point_tile (county) WHERE covered;
 
 GRANT SELECT ON coffee.farm_point_tile TO PUBLIC;
 
@@ -139,22 +142,24 @@ UPDATE coffee.digitized_polygon d SET county = c.counties
 FROM ref.kenya_counties c
 WHERE d.county IS NULL AND ST_Intersects(c.geom, ST_Centroid(d.geom));
 
-COMMENT ON TABLE coffee.farm_point_tile IS 'perf v2';
+COMMENT ON TABLE coffee.farm_point_tile IS 'perf v3';
 
 COMMIT;
 
 -- ------------------------------------------------- 4. summary counters (tiny)
 -- The sidebar numbers come from one 40-row table instead of eight sequential
 -- scans of the QC table.  Refreshed by build_qc.py and by /api/refresh-stats.
-CREATE MATERIALIZED VIEW IF NOT EXISTS coffee.county_stats AS
+-- Only figures that change when build_qc.py runs belong in here. Digitising
+-- coverage is NOT one of them -- it changes on every polygon save, so it is
+-- counted live from coffee.farm_point_tile (see /api/progress).
+DROP MATERIALIZED VIEW IF EXISTS coffee.county_stats CASCADE;
+CREATE MATERIALIZED VIEW coffee.county_stats AS
 SELECT coalesce(county_gis, '(outside Kenya)') AS county,
        count(*)                                                        AS n,
        count(*) FILTER (WHERE status = 'clean')                        AS clean,
        count(*) FILTER (WHERE status = 'removed')                      AS removed,
        count(*) FILTER (WHERE NOT county_match OR county_match IS NULL) AS mismatch,
        bool_or(in_target_county)                                       AS target,
-       count(*) FILTER (WHERE status = 'clean' AND polygon_gid IS NOT NULL) AS clean_covered,
-       count(*) FILTER (WHERE polygon_gid IS NOT NULL)                 AS covered,
        sum(trees_total) FILTER (WHERE status = 'clean')                AS trees_clean
 FROM coffee.farm_point_qc GROUP BY 1;
 CREATE UNIQUE INDEX IF NOT EXISTS county_stats_county_idx ON coffee.county_stats (county);

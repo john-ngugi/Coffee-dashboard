@@ -467,7 +467,14 @@ def progress():
     tot = query("""SELECT count(*), coalesce(round(sum(area_ha),1),0), count(DISTINCT created_by),
                           min(created_at)::date, max(created_at)::date
                    FROM coffee.digitized_polygon""", one=True)
-    pts = query("""SELECT sum(clean), sum(clean_covered), sum(covered) FROM coffee.county_stats""", one=True)
+    # Coverage is counted live: it moves with every polygon save, so a
+    # materialised view would report yesterday's number while the polygon
+    # count kept rising. The partial index on (county) WHERE covered keeps
+    # this to a few hundred rows.
+    cov = query("""SELECT count(*) FILTER (WHERE status = 'clean'), count(*)
+                   FROM coffee.farm_point_tile WHERE covered""", one=True)
+    clean_total = query("SELECT sum(clean) FROM coffee.county_stats", one=True)[0]
+    pts = (clean_total, cov[0], cov[1])
     days = query("""SELECT created_at::date, count(*), round(sum(area_ha),1), count(DISTINCT created_by)
                     FROM coffee.digitized_polygon GROUP BY 1 ORDER BY 1 DESC LIMIT 30""")
     who = query("""SELECT coalesce(m.full_name, d.created_by), count(*), round(sum(area_ha),1), max(created_at)
@@ -475,8 +482,12 @@ def progress():
                    GROUP BY 1 ORDER BY 2 DESC""") if has_table("coffee.team_member") else \
           query("""SELECT created_by, count(*), round(sum(area_ha),1), max(created_at)
                    FROM coffee.digitized_polygon GROUP BY 1 ORDER BY 2 DESC""")
-    counties = query("""SELECT county, clean, clean_covered FROM coffee.county_stats
-                        WHERE target AND clean_covered > 0 ORDER BY clean_covered DESC""")
+    counties = query("""
+      SELECT s.county, s.clean, c.clean_covered
+      FROM coffee.county_stats s
+      JOIN (SELECT county, count(*) FILTER (WHERE status = 'clean') AS clean_covered
+            FROM coffee.farm_point_tile WHERE covered GROUP BY county) c ON c.county = s.county
+      WHERE s.target AND c.clean_covered > 0 ORDER BY c.clean_covered DESC""")
     empty = query("SELECT count(*) FROM coffee.digitized_polygon WHERE n_points = 0", one=True)
     return dict(
         polygons=tot[0], area_ha=float(tot[1]), editors=tot[2], first=str(tot[3]), last=str(tot[4]),
