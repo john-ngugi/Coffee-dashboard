@@ -7,7 +7,7 @@ render without preloading, plus summary / histogram endpoints for the sidebar.
 
     python dashboard.py            # http://localhost:5055
 """
-import os, json, time, select
+import os, json, time, select, gzip, hashlib, functools
 from pathlib import Path
 from flask import Flask, Response, request, jsonify, send_file, stream_with_context, session, abort
 import psycopg2, psycopg2.pool, psycopg2.extensions
@@ -36,10 +36,101 @@ class BlockingPool:
             c.rollback()
         self.q.put(c)
 
-POOL = BlockingPool(8)
+POOL = BlockingPool(int(os.environ.get("DASH_POOL", "12")))
 app = Flask(__name__, static_folder=None)
 # signs the /team login cookie; set DASH_SECRET in .env so logins survive restarts
 app.secret_key = os.environ.get("DASH_SECRET") or __import__("secrets").token_hex(32)
+
+
+# ---------------------------------------------------------------- response cache
+# Nothing here changes on a timer: the QC numbers change when build_qc.py runs,
+# the polygons when a digitiser saves, and the LISTEN thread below hears both.
+# So every answer is cached in memory under a version stamp and a change bumps
+# that stamp -- the first viewer pays for the query, everyone else is served
+# from RAM, and an edit invalidates immediately instead of expiring late.
+#
+#   qc    QC results: flags, counties, histograms, clusters
+#   poly  digitised polygons and the progress figures
+#   tile  map tiles (bumped at most once a minute; see bump())
+VERSION = {"qc": 1, "poly": 1, "tile": 1}
+CACHE = {}                       # (group, name, key) -> (bytes, etag, content_type)
+CACHE_LOCK = threading.Lock()
+CACHE_MAX_BYTES = int(os.environ.get("DASH_CACHE_MB", "192")) * 1024 * 1024
+_cache_bytes = 0
+_last_bump = {}
+STATS = {"hits": 0, "misses": 0}
+
+
+def bump(group, min_interval=0.0):
+    """Invalidate a cache group. min_interval coalesces floods (polygon saves)."""
+    global _cache_bytes
+    now = time.time()
+    if min_interval and now - _last_bump.get(group, 0) < min_interval:
+        return False
+    with CACHE_LOCK:
+        _last_bump[group] = now
+        VERSION[group] = VERSION.get(group, 0) + 1
+        for k in [k for k in CACHE if k[0] == group]:
+            _cache_bytes -= len(CACHE.pop(k)[0])
+    return True
+
+
+def cache_get(group, name, key):
+    with CACHE_LOCK:
+        hit = CACHE.get((group, name, key))
+        STATS["hits" if hit else "misses"] += 1
+        return hit
+
+
+def cache_put(group, name, key, payload, ctype):
+    global _cache_bytes
+    etag = '"%s"' % hashlib.md5(payload).hexdigest()[:16]
+    with CACHE_LOCK:
+        if _cache_bytes > CACHE_MAX_BYTES:          # simple flush, not an LRU:
+            CACHE.clear(); _cache_bytes = 0         # the working set is small
+        CACHE[(group, name, key)] = (payload, etag, ctype)
+        _cache_bytes += len(payload)
+    return etag
+
+
+def respond(payload, etag, ctype):
+    """Serve bytes with an ETag, a 304 when the browser already has them, and
+    gzip when it is worth it (GeoJSON compresses ~6x, MVT ~1.5x)."""
+    if request.headers.get("If-None-Match") == etag:
+        return Response(status=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
+    headers = {"ETag": etag, "Cache-Control": "no-cache"}
+    body = payload
+    if len(payload) > 1400 and "gzip" in request.headers.get("Accept-Encoding", ""):
+        body = gzip.compress(payload, 5)
+        headers["Content-Encoding"] = "gzip"
+        headers["Vary"] = "Accept-Encoding"
+    return Response(body, mimetype=ctype, headers=headers)
+
+
+def cached(group, ctype="application/json", vary=()):
+    """Cache a view's body under `group`, keyed by its arguments."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*a, **kw):
+            key = (a, tuple(sorted(kw.items())), tuple(request.args.get(v) for v in vary))
+            hit = cache_get(group, fn.__name__, key)
+            if hit is None:
+                out = fn(*a, **kw)
+                payload = out if isinstance(out, (bytes, bytearray)) else json.dumps(out).encode()
+                payload = bytes(payload)
+                etag = cache_put(group, fn.__name__, key, payload, ctype)
+                hit = (payload, etag, ctype)
+            return respond(*hit)
+        return wrapper
+    return deco
+
+
+@app.get("/api/cache")
+def cache_stats():
+    total = STATS["hits"] + STATS["misses"]
+    return jsonify(dict(entries=len(CACHE), bytes=_cache_bytes, versions=VERSION,
+                        hits=STATS["hits"], misses=STATS["misses"],
+                        hit_rate=round(100.0 * STATS["hits"] / total, 1) if total else None))
 
 
 # ---------------------------------------------------------------- live updates
@@ -49,9 +140,15 @@ app.secret_key = os.environ.get("DASH_SECRET") or __import__("secrets").token_he
 # Events; the page reloads only the layer that changed.
 NOTIFY_SQL = """
 CREATE OR REPLACE FUNCTION coffee.notify_change() RETURNS trigger AS $$
+DECLARE tbl text := TG_TABLE_NAME;
 BEGIN
+    -- a polygon save also stamps farm_point_qc (coverage); report that as
+    -- 'farm_point_track' so dashboards refresh the polygons only, not everything
+    IF tbl = 'farm_point_qc' AND coalesce(current_setting('coffee.tracking', true), '') = 'on' THEN
+        tbl := 'farm_point_track';
+    END IF;
     PERFORM pg_notify('coffee_changes',
-        json_build_object('table', TG_TABLE_NAME, 'op', TG_OP, 'at', now())::text);
+        json_build_object('table', tbl, 'op', TG_OP, 'at', now())::text);
     RETURN NULL;
 END $$ LANGUAGE plpgsql;
 CREATE OR REPLACE TRIGGER notify_change AFTER INSERT OR UPDATE OR DELETE
@@ -68,6 +165,27 @@ SUB_LOCK = threading.Lock()
 def _pg_connect():
     return psycopg2.connect(host=os.environ["PGHOST"], port=os.environ["PGPORT"], user=os.environ["PGUSER"],
                             password=os.environ["PGPASSWORD"], dbname=os.environ["PGDATABASE"])
+
+
+def ensure_perf_objects():
+    """Create the speed-up structures (deploy/sql/perf.sql) if they are missing,
+    so a fresh deployment needs no manual migration step."""
+    sql_file = HERE / "deploy" / "sql" / "perf.sql"
+    if not sql_file.exists():
+        return
+    c = _pg_connect()
+    c.autocommit = True          # perf.sql manages its own BEGIN/COMMIT
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT to_regclass('coffee.farm_point_tile')")
+            if cur.fetchone()[0] is None:
+                print("applying deploy/sql/perf.sql ...", flush=True)
+                cur.execute(sql_file.read_text(encoding="utf-8"))
+                print("perf structures created", flush=True)
+    except Exception as e:
+        print("perf.sql skipped:", e, flush=True)
+    finally:
+        c.close()
 
 
 def ensure_triggers():
@@ -93,6 +211,18 @@ def listener():
                 c.poll()
                 while c.notifies:
                     n = c.notifies.pop(0)
+                    try:
+                        tbl = json.loads(n.payload).get("table", "")
+                    except Exception:
+                        tbl = ""
+                    # a polygon save changes the polygons and the progress figures
+                    # at once; the map tiles only carry a "covered" ring, so those
+                    # are refreshed at most once a minute rather than on every save
+                    if tbl in ("digitized_polygon", "digitized_polygon_history", "farm_point_track"):
+                        bump("poly")
+                        bump("tile", min_interval=60)
+                    else:
+                        bump("qc"); bump("poly"); bump("tile")
                     with SUB_LOCK:
                         for q in list(SUBSCRIBERS):
                             q.put(n.payload)
@@ -179,23 +309,77 @@ def config():
 
 
 # ---------------------------------------------------------------- tiles
+# Below CLUSTER_ZOOM the map draws one circle per grid cell (counts aggregated
+# from the 1 km hex grid: 8k rows instead of 385k points -- a z9 tile is 15 KB
+# instead of 3.4 MB). At and above it, individual points come from
+# coffee.farm_point_tile, a narrow copy holding only what the map draws.
+CLUSTER_ZOOM = int(os.environ.get("DASH_CLUSTER_ZOOM", "12"))
+
+
+def tile_filter(args):
+    """WHERE fragment for the narrow tile table (same filters as the sidebar)."""
+    where, params = ["TRUE"], []
+    status = args.get("status", "all")
+    if status in ("clean", "removed"):
+        where.append("status = %s"); params.append(status)
+    flag = args.get("flag")
+    if flag in FLAGS:
+        where.append("%s = ANY(flags)"); params.append(flag)
+    county = args.get("county")
+    if county:
+        where.append("county = %s"); params.append(county)
+    dig = args.get("digitised")
+    if dig == "yes":
+        where.append("covered")
+    elif dig == "no":
+        where.append("NOT covered")
+    return " AND ".join(where), params
+
+
 @app.get("/tiles/points/<int:z>/<int:x>/<int:y>.pbf")
+@cached("tile", "application/x-protobuf", vary=("status", "flag", "county", "digitised"))
 def points_tile(z, x, y):
-    where, params = point_filter(request.args)
+    where, params = tile_filter(request.args)
     sql = f"""
       WITH b AS (SELECT ST_TileEnvelope(%s,%s,%s) AS g),
       m AS (
-        SELECT kobo_id, status, flags[1] AS flag, cardinality(flags) AS nflags,
-               trees_total, grower_type, county_gis, (polygon_gid IS NOT NULL)::int AS covered,
-               ST_AsMVTGeom(ST_Transform(q.geom,3857), b.g, 4096, 32, true) AS geom
-        FROM coffee.farm_point_qc q, b
-        WHERE q.geom && ST_Transform(b.g, 4326) AND {where})
+        SELECT kobo_id, status, flag, covered::int AS covered,
+               ST_AsMVTGeom(ST_Transform(t.geom,3857), b.g, 4096, 16, true) AS geom
+        FROM coffee.farm_point_tile t, b
+        WHERE t.geom && ST_Transform(b.g, 4326) AND {where})
       SELECT ST_AsMVT(m, 'points', 4096, 'geom') FROM m"""
     row = query(sql, [z, x, y] + params, one=True)
-    return Response(bytes(row[0]) if row and row[0] else b"", mimetype="application/x-protobuf")
+    return bytes(row[0]) if row and row[0] else b""
+
+
+@app.get("/tiles/clusters/<int:z>/<int:x>/<int:y>.pbf")
+@cached("tile", "application/x-protobuf", vary=("g",))
+def clusters_tile(z, x, y):
+    """One weighted dot per grid cell, from the hex grid -- the low-zoom view.
+    ?g=N splits the tile into an NxN grid (N cells across 256 px), so a smaller
+    N means fewer, larger circles."""
+    try:
+        grid = min(64, max(4, int(request.args.get("g", 12))))
+    except ValueError:
+        grid = 12
+    sql = f"""
+      WITH b AS (SELECT ST_TileEnvelope(%s,%s,%s) AS g),
+      c AS (
+        SELECT ST_SnapToGrid(h.geom3857, (SELECT (ST_XMax(g)-ST_XMin(g))/{grid} FROM b)) cell,
+               sum(n_all) n, sum(n_clean) n_ok, sum(n_removed) n_bad,
+               ST_Centroid(ST_Collect(h.geom3857)) g3
+        FROM coffee.farm_point_hex h, b
+        WHERE h.geom3857 && b.g GROUP BY 1),
+      m AS (
+        SELECT n, n_ok, n_bad, ST_AsMVTGeom(g3, (SELECT g FROM b), 4096, 0, true) AS geom
+        FROM c)
+      SELECT ST_AsMVT(m, 'clusters', 4096, 'geom') FROM m"""
+    row = query(sql, [z, x, y], one=True)
+    return bytes(row[0]) if row and row[0] else b""
 
 
 @app.get("/tiles/hex/<int:z>/<int:x>/<int:y>.pbf")
+@cached("tile", "application/x-protobuf", vary=("metric",))
 def hex_tile(z, x, y):
     metric = request.args.get("metric", "n_all")
     if metric not in ("n_all", "n_clean", "n_removed", "n_cluster"):
@@ -203,62 +387,79 @@ def hex_tile(z, x, y):
     sql = f"""
       WITH b AS (SELECT ST_TileEnvelope(%s,%s,%s) AS g),
       m AS (
-        SELECT i, j, n_all, n_clean, n_removed, n_cluster, {metric} AS v,
+        SELECT n_all, n_clean, n_removed, n_cluster, {metric} AS v,
                ST_AsMVTGeom(ST_Transform(h.geom,3857), b.g, 4096, 8, true) AS geom
         FROM coffee.farm_point_hex h, b
         WHERE h.geom && ST_Transform(b.g, 4326))
       SELECT ST_AsMVT(m, 'hex', 4096, 'geom') FROM m"""
     row = query(sql, [z, x, y], one=True)
-    return Response(bytes(row[0]) if row and row[0] else b"", mimetype="application/x-protobuf")
+    return bytes(row[0]) if row and row[0] else b""
+
+
+@app.get("/tiles/polygons/<int:z>/<int:x>/<int:y>.pbf")
+@cached("poly", "application/x-protobuf")
+def polygons_tile(z, x, y):
+    """Digitised polygons as tiles, with the counts already cached on the row."""
+    sql = """
+      WITH b AS (SELECT ST_TileEnvelope(%s,%s,%s) AS g),
+      m AS (
+        SELECT gid, n_points, n_clean, area_ha::float8 AS area_ha,
+               ST_AsMVTGeom(ST_Transform(d.geom,3857), b.g, 4096, 16, true) AS geom
+        FROM coffee.digitized_polygon d, b
+        WHERE d.geom && ST_Transform(b.g, 4326))
+      SELECT ST_AsMVT(m, 'polygons', 4096, 'geom') FROM m"""
+    row = query(sql, [z, x, y], one=True)
+    return bytes(row[0]) if row and row[0] else b""
 
 
 # ---------------------------------------------------------------- data
 @app.get("/api/counties")
+@cached("qc")
 def counties():
     rows = query("""
-      SELECT c.counties,
-             ST_AsGeoJSON(ST_SimplifyPreserveTopology(c.geom, 0.002))::json,
-             coalesce(s.n, 0), coalesce(s.n_clean, 0), coalesce(s.target, false)
-      FROM ref.kenya_counties c
-      LEFT JOIN (SELECT county_gis, count(*) n, count(*) FILTER (WHERE status='clean') n_clean,
-                        bool_or(in_target_county) target
-                 FROM coffee.farm_point_qc GROUP BY county_gis) s ON s.county_gis = c.counties
+      SELECT g.county, g.gj, coalesce(s.n,0), coalesce(s.clean,0), coalesce(s.target,false)
+      FROM coffee.county_geom g
+      LEFT JOIN coffee.county_stats s ON s.county = g.county
       ORDER BY 1""")
-    return jsonify({"type": "FeatureCollection", "features": [
-        {"type": "Feature", "geometry": g,
+    return {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": gj,
          "properties": {"name": n, "n": cnt, "n_clean": nc, "target": t}}
-        for n, g, cnt, nc, t in rows]})
+        for n, gj, cnt, nc, t in rows]}
 
 
 @app.get("/api/polygons")
+@cached("poly", vary=("bbox",))
 def polygons():
-    """Digitised coffee polygons (coffee.digitized_polygon) with points-inside counts."""
-    rows = query("""
+    """Digitised polygons with their cached point counts. ?bbox=w,s,e,n limits
+    the answer to the viewport; without it every polygon is returned."""
+    where, params = "TRUE", []
+    bbox = request.args.get("bbox")
+    if bbox:
+        try:
+            w, so, e, no = [float(v) for v in bbox.split(",")][:4]
+            where = "d.geom && ST_MakeEnvelope(%s,%s,%s,%s,4326)"; params = [w, so, e, no]
+        except ValueError:
+            pass
+    rows = query(f"""
       SELECT d.gid, d.id, d.name, d.notes, d.source || ' · ' || d.created_by, d.area_ha, d.created_at::date,
-             ST_AsGeoJSON(d.geom)::json,
-             count(q.kobo_id), count(q.kobo_id) FILTER (WHERE q.status='clean'),
-             coalesce(sum(q.trees_total) FILTER (WHERE q.status='clean'), 0)
-      FROM coffee.digitized_polygon d
-      LEFT JOIN coffee.farm_point_qc q ON ST_Intersects(q.geom, d.geom)
-      GROUP BY d.gid ORDER BY d.gid""")
-    return jsonify({"type": "FeatureCollection", "features": [
+             ST_AsGeoJSON(d.geom)::json, d.n_points, d.n_clean, d.trees_clean
+      FROM coffee.digitized_polygon d WHERE {where} ORDER BY d.gid""", params)
+    return {"type": "FeatureCollection", "features": [
         {"type": "Feature", "geometry": g,
          "properties": {"gid": gid, "id": id_, "name": nm, "notes": nt, "source": src,
                         "area_ha": float(a) if a is not None else None, "created": str(cr),
                         "n": n, "n_clean": nc, "trees_clean": int(t)}}
-        for gid, id_, nm, nt, src, a, cr, g, n, nc, t in rows]})
+        for gid, id_, nm, nt, src, a, cr, g, n, nc, t in rows]}
 
 
 @app.get("/api/progress")
+@cached("poly")
 def progress():
     """Digitising progress: polygons done, points covered, per day and per county."""
     tot = query("""SELECT count(*), coalesce(round(sum(area_ha),1),0), count(DISTINCT created_by),
                           min(created_at)::date, max(created_at)::date
                    FROM coffee.digitized_polygon""", one=True)
-    pts = query("""SELECT count(*) FILTER (WHERE status='clean'),
-                          count(*) FILTER (WHERE status='clean' AND polygon_gid IS NOT NULL),
-                          count(*) FILTER (WHERE polygon_gid IS NOT NULL)
-                   FROM coffee.farm_point_qc""", one=True)
+    pts = query("""SELECT sum(clean), sum(clean_covered), sum(covered) FROM coffee.county_stats""", one=True)
     days = query("""SELECT created_at::date, count(*), round(sum(area_ha),1), count(DISTINCT created_by)
                     FROM coffee.digitized_polygon GROUP BY 1 ORDER BY 1 DESC LIMIT 30""")
     who = query("""SELECT coalesce(m.full_name, d.created_by), count(*), round(sum(area_ha),1), max(created_at)
@@ -266,21 +467,17 @@ def progress():
                    GROUP BY 1 ORDER BY 2 DESC""") if has_table("coffee.team_member") else \
           query("""SELECT created_by, count(*), round(sum(area_ha),1), max(created_at)
                    FROM coffee.digitized_polygon GROUP BY 1 ORDER BY 2 DESC""")
-    counties = query("""
-      SELECT county_gis, count(*) FILTER (WHERE status='clean'),
-             count(*) FILTER (WHERE status='clean' AND polygon_gid IS NOT NULL)
-      FROM coffee.farm_point_qc WHERE in_target_county GROUP BY 1
-      HAVING count(*) FILTER (WHERE status='clean' AND polygon_gid IS NOT NULL) > 0
-      ORDER BY 3 DESC""")
-    empty = query("""SELECT count(*) FROM coffee.digitized_polygon d
-                     WHERE NOT EXISTS (SELECT 1 FROM coffee.farm_point_qc q WHERE q.polygon_gid = d.gid)""", one=True)
-    return jsonify(dict(
+    counties = query("""SELECT county, clean, clean_covered FROM coffee.county_stats
+                        WHERE target AND clean_covered > 0 ORDER BY clean_covered DESC""")
+    empty = query("SELECT count(*) FROM coffee.digitized_polygon WHERE n_points = 0", one=True)
+    return dict(
         polygons=tot[0], area_ha=float(tot[1]), editors=tot[2], first=str(tot[3]), last=str(tot[4]),
-        clean=pts[0], clean_covered=pts[1], any_covered=pts[2], empty_polygons=empty[0],
+        clean=int(pts[0] or 0), clean_covered=int(pts[1] or 0), any_covered=int(pts[2] or 0),
+        empty_polygons=empty[0],
         days=[dict(day=str(d), n=n, ha=float(h), editors=e) for d, n, h, e in days],
         who=[dict(user=u, n=n, ha=float(h), last=str(l)[:16]) for u, n, h, l in who],
         counties=[dict(county=c, clean=n, covered=k, pct=(100.0 * k / n if n else 0)) for c, n, k in counties],
-    ))
+    )
 
 
 def has_table(name):
@@ -480,42 +677,31 @@ def history():
 
 
 @app.get("/api/summary")
+@cached("qc")
 def summary():
-    status = dict(query("SELECT status, count(*) FROM coffee.farm_point_qc GROUP BY 1"))
-    flags = query("""SELECT f, count(*) FROM coffee.farm_point_qc, unnest(flags) f
-                     GROUP BY 1 ORDER BY 2 DESC""")
-    warnings = query("""SELECT f, count(*) FROM coffee.farm_point_qc, unnest(warnings) f
-                        GROUP BY 1 ORDER BY 2 DESC""")
-    counties = query("""
-      SELECT coalesce(county_gis,'(outside Kenya)'), count(*),
-             count(*) FILTER (WHERE status='clean'),
-             count(*) FILTER (WHERE status='removed'),
-             count(*) FILTER (WHERE NOT county_match OR county_match IS NULL),
-             bool_or(in_target_county)
-      FROM coffee.farm_point_qc GROUP BY 1 ORDER BY 2 DESC""")
-    trees = query("""
-      SELECT count(*), sum(trees_total), sum(trees_total) FILTER (WHERE status='clean'),
-             percentile_cont(0.5) WITHIN GROUP (ORDER BY trees_total) FILTER (WHERE status='clean')
-      FROM coffee.farm_point_qc""", one=True)
-    src = query("""SELECT count(*), count(*) FILTER (WHERE geom IS NULL),
-                          count(*) FILTER (WHERE geom IS NOT NULL AND NOT coord_valid)
-                   FROM coffee.farm_point""", one=True)
-    clusters = query("""SELECT count(DISTINCT cluster_id), max(cluster_size)
-                        FROM coffee.farm_point_qc WHERE cluster_id IS NOT NULL""", one=True)
-    return jsonify(dict(
-        source=dict(total=src[0], no_coordinate=src[1], invalid_coordinate=src[2]),
+    """Sidebar figures. Every number comes from a materialised view (a few dozen
+    rows) rather than a scan of the 1.5 GB QC table."""
+    st = query("""SELECT src_total, src_no_coord, src_bad_coord, n, trees_total, trees_clean,
+                         trees_median, n_clusters, biggest_cluster FROM coffee.summary_stats""", one=True)
+    counties = query("""SELECT county, n, clean, removed, mismatch, target
+                        FROM coffee.county_stats ORDER BY n DESC""")
+    fl = query("SELECT flag, n, is_warning FROM coffee.flag_stats ORDER BY n DESC")
+    status = {"clean": sum(c[2] for c in counties), "removed": sum(c[3] for c in counties)}
+    return dict(
+        source=dict(total=st[0], no_coordinate=st[1], invalid_coordinate=st[2]),
         status=status,
-        flags=[dict(flag=f, n=n) for f, n in flags],
-        warnings=[dict(flag=f, n=n) for f, n in warnings],
+        flags=[dict(flag=f, n=n) for f, n, w in fl if not w],
+        warnings=[dict(flag=f, n=n) for f, n, w in fl if w],
         counties=[dict(county=c, n=n, clean=k, removed=r, mismatch=m, target=t)
                   for c, n, k, r, m, t in counties],
-        trees=dict(n=trees[0], total=int(trees[1] or 0), clean_total=int(trees[2] or 0),
-                   clean_median=trees[3]),
-        clusters=dict(n=clusters[0], largest=clusters[1]),
+        trees=dict(n=st[3], total=int(st[4] or 0), clean_total=int(st[5] or 0),
+                   clean_median=float(st[6]) if st[6] is not None else None),
+        clusters=dict(n=st[7], largest=st[8]),
         criteria=criteria(),
-    ))
+    )
 
 
+@functools.lru_cache(maxsize=1)
 def criteria():
     import importlib.util
     spec = importlib.util.spec_from_file_location("build_qc", HERE / "build_qc.py")
@@ -527,46 +713,27 @@ def criteria():
 
 
 @app.get("/api/hist")
+@cached("qc")
 def hist():
-    """Histograms used to discuss thresholds: trees, road distance, cluster size."""
-    trees = query("""
-      SELECT b, count(*) FROM (
-        SELECT CASE WHEN trees_total IS NULL OR trees_total=0 THEN '0'
-                    WHEN trees_total<50 THEN '1-49' WHEN trees_total<100 THEN '50-99'
-                    WHEN trees_total<200 THEN '100-199' WHEN trees_total<500 THEN '200-499'
-                    WHEN trees_total<1000 THEN '500-999' WHEN trees_total<2000 THEN '1k-2k'
-                    WHEN trees_total<5000 THEN '2k-5k' WHEN trees_total<10000 THEN '5k-10k'
-                    WHEN trees_total<100000 THEN '10k-100k' ELSE '100k+' END b,
-               trees_total FROM coffee.farm_point_qc) s GROUP BY b""")
-    order = ['0','1-49','50-99','100-199','200-499','500-999','1k-2k','2k-5k','5k-10k','10k-100k','100k+']
-    d = dict(trees); trees = [dict(bin=b, n=d.get(b, 0)) for b in order]
-    road = query("""
-      SELECT b, count(*) FROM (
-        SELECT CASE WHEN dist_road_m<=2 THEN '0-2 m' WHEN dist_road_m<=5 THEN '2-5 m'
-                    WHEN dist_road_m<=10 THEN '5-10 m' WHEN dist_road_m<=20 THEN '10-20 m'
-                    WHEN dist_road_m<=50 THEN '20-50 m' WHEN dist_road_m<=100 THEN '50-100 m'
-                    WHEN dist_road_m<=500 THEN '100-500 m' ELSE '500 m+' END b
-        FROM coffee.farm_point_qc) s GROUP BY b""")
-    order = ['0-2 m','2-5 m','5-10 m','10-20 m','20-50 m','50-100 m','100-500 m','500 m+']
-    d = dict(road); road = [dict(bin=b, n=d.get(b, 0)) for b in order]
-    clus = query("""
-      SELECT b, count(*) FROM (
-        SELECT CASE WHEN cluster_size=0 THEN 'none' WHEN cluster_size<10 THEN '5-9'
-                    WHEN cluster_size<20 THEN '10-19' WHEN cluster_size<50 THEN '20-49'
-                    WHEN cluster_size<100 THEN '50-99' ELSE '100+' END b
-        FROM coffee.farm_point_qc) s GROUP BY b""")
-    order = ['none','5-9','10-19','20-49','50-99','100+']
-    d = dict(clus); clus = [dict(bin=b, n=d.get(b, 0)) for b in order]
-    area = query("""
-      SELECT b, count(*) FILTER (WHERE grower_type='Society'), count(*) FILTER (WHERE grower_type='Estate') FROM (
-        SELECT grower_type, CASE WHEN implied_ha=0 THEN '0' WHEN implied_ha<0.25 THEN '<0.25 ha' WHEN implied_ha<0.5 THEN '0.25-0.5'
-                    WHEN implied_ha<1 THEN '0.5-1' WHEN implied_ha<2 THEN '1-2' WHEN implied_ha<4 THEN '2-4'
-                    WHEN implied_ha<10 THEN '4-10' WHEN implied_ha<40 THEN '10-40' ELSE '40+ ha' END b
-        FROM coffee.farm_point_qc) s GROUP BY b""")
-    order = ['0','<0.25 ha','0.25-0.5','0.5-1','1-2','2-4','4-10','10-40','40+ ha']
-    d = {b: (a, e) for b, a, e in area}
-    area = [dict(bin=b, n=d.get(b, (0, 0))[0], estate=d.get(b, (0, 0))[1]) for b in order]
-    return jsonify(dict(trees=trees, road=road, cluster=clus, area=area))
+    """The four sidebar histograms, read from coffee.hist_stats in one query."""
+    rows = query("SELECT kind, bin, n, estate FROM coffee.hist_stats")
+    got = {(k, b): (n, e) for k, b, n, e in rows}
+    ORDER = dict(
+        trees=['0','1-49','50-99','100-199','200-499','500-999','1k-2k','2k-5k','5k-10k','10k-100k','100k+'],
+        road=['0-2 m','2-5 m','5-10 m','10-20 m','20-50 m','50-100 m','100-500 m','500 m+'],
+        cluster=['none','5-9','10-19','20-49','50-99','100+'],
+        area=['0','<0.25 ha','0.25-0.5','0.5-1','1-2','2-4','4-10','10-40','40+ ha'])
+    def series(kind, with_estate=False):
+        out = []
+        for b in ORDER[kind]:
+            n, e = got.get((kind, b), (0, 0))
+            row = dict(bin=b, n=n - e if with_estate else n)
+            if with_estate:
+                row["estate"] = e
+            out.append(row)
+        return out
+    return dict(trees=series("trees"), road=series("road"),
+                cluster=series("cluster"), area=series("area", True))
 
 
 @app.get("/api/point/<int:kobo_id>")
@@ -596,31 +763,48 @@ def point(kobo_id):
 
 
 @app.get("/api/heat")
+@cached("qc", vary=("metric",))
 def heat():
     """Hex centroids weighted by count -- feeds the Leaflet.heat layer."""
     metric = request.args.get("metric", "n_all")
     if metric not in ("n_all", "n_clean", "n_removed", "n_cluster"):
         metric = "n_all"
-    rows = query(f"""SELECT round(ST_Y(ST_Centroid(geom))::numeric,4), round(ST_X(ST_Centroid(geom))::numeric,4), {metric}
+    rows = query(f"""SELECT round(ST_Y(ST_Centroid(geom))::numeric,4),
+                            round(ST_X(ST_Centroid(geom))::numeric,4), {metric}
                      FROM coffee.farm_point_hex WHERE {metric} > 0""")
-    return jsonify([[float(a), float(b), int(c)] for a, b, c in rows])
+    return [[float(a), float(b), int(c)] for a, b, c in rows]
 
 
 @app.get("/api/clusters")
+@cached("qc")
 def clusters():
     """Largest DBSCAN clusters -- for the 'suspicious clusters' table."""
-    rows = query("""
-      SELECT cluster_id, count(*) n, count(DISTINCT submitted_by) enumerators,
-             min(county_gis), round(avg(latitude)::numeric,5), round(avg(longitude)::numeric,5),
-             mode() WITHIN GROUP (ORDER BY factory_name)
-      FROM coffee.farm_point_qc WHERE cluster_id IS NOT NULL
-      GROUP BY cluster_id ORDER BY n DESC LIMIT 40""")
-    return jsonify([dict(id=a, n=b, enumerators=c, county=d, lat=float(e), lon=float(f), factory=g)
-                    for a, b, c, d, e, f, g in rows])
+    rows = query("""SELECT cluster_id, n, enumerators, county, lat, lon, factory
+                    FROM coffee.cluster_stats ORDER BY n DESC""")
+    return [dict(id=a, n=b, enumerators=c, county=d, lat=float(e), lon=float(f), factory=g)
+            for a, b, c, d, e, f, g in rows]
 
+
+# Boot runs at import as well as under `python dashboard.py`, so the LISTEN
+# thread and the schema checks also happen when a WSGI server (gunicorn) loads
+# this module. It is idempotent: each worker process boots once.
+_BOOTED = False
+_BOOT_LOCK = threading.Lock()
+
+
+def boot():
+    global _BOOTED
+    with _BOOT_LOCK:
+        if _BOOTED:
+            return
+        _BOOTED = True
+    ensure_triggers()
+    ensure_perf_objects()
+    threading.Thread(target=listener, daemon=True).start()
+
+
+boot()
 
 if __name__ == "__main__":
-    ensure_triggers()
-    threading.Thread(target=listener, daemon=True).start()
     app.run(host=os.environ.get("DASH_HOST", "127.0.0.1"), port=int(os.environ.get("DASH_PORT", "5055")),
             debug=False, threaded=True)

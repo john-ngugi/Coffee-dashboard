@@ -205,13 +205,40 @@ let sat;   // MapTiler Hybrid when a key is configured, else Esri imagery
 const filters = { status: 'all', flag: '', county: '', digitised: '' };
 function qs(){ const p = new URLSearchParams(); for (const k in filters) if (filters[k]) p.set(k, filters[k]); return p.toString(); }
 
-let countiesLayer, pointsLayer, hexLayer, heatLayer, polyLayer;
+let countiesLayer, pointsLayer, hexLayer, heatLayer, polyLayer, clusterLayer;
+
+// Below this zoom the map draws one weighted circle per grid cell instead of
+// every point: a z9 tile is then 15 KB instead of 3.4 MB, so panning the whole
+// country stays smooth. Individual points appear from CLUSTER_ZOOM upwards.
+const CLUSTER_ZOOM = 12;
+const CLUSTER_GRID = 8;   // cells across a 256 px tile
+function clusterRadius(n){ return Math.max(4, Math.min(15, 3 + Math.sqrt(n) * 0.9)); }
+function makeClusters(){
+  return L.vectorGrid.protobuf('/tiles/clusters/{z}/{x}/{y}.pbf?g=' + CLUSTER_GRID, {
+    maxZoom: CLUSTER_ZOOM, interactive: true, rendererFactory: L.canvas.tile, pane: 'points',
+    vectorTileLayerStyles: { clusters: p => ({
+      radius: clusterRadius(p.n), fill: true,
+      fillColor: p.n_bad / Math.max(p.n, 1) > 0.25 ? getCSS('--c-cluster') : getCSS('--c-clean'),
+      fillOpacity: 0.75, color: '#fff', weight: 1.5, stroke: true }) }
+  }).bindTooltip(() => '', { sticky: true })
+    .on('mouseover', e => { const p = e.layer.properties;
+      e.target.setTooltipContent(`${fmt(p.n)} points here<br>${fmt(p.n_ok)} clean · ${fmt(p.n_bad)} flagged<br><i>zoom in past ${CLUSTER_ZOOM} for individual points</i>`); })
+    .on('click', e => map.setView(e.latlng, CLUSTER_ZOOM + 1));
+}
+
+// swap cluster circles for real points as the user zooms in
+function syncPointLayers(){
+  const show = legendEl.querySelector('#L-points').checked, z = map.getZoom();
+  if (!show) { map.removeLayer(clusterLayer); map.removeLayer(pointsLayer); return; }
+  if (z >= CLUSTER_ZOOM) { map.removeLayer(clusterLayer); if (!map.hasLayer(pointsLayer)) pointsLayer.addTo(map); }
+  else { map.removeLayer(pointsLayer); if (!map.hasLayer(clusterLayer)) clusterLayer.addTo(map); }
+}
 
 function hexColor(v){ let i = 0; while (i < HEX_BREAKS.length - 1 && v >= HEX_BREAKS[i + 1]) i++; return SEQ[i]; }
 
 function makePoints(){
   const layer = L.vectorGrid.protobuf('/tiles/points/{z}/{x}/{y}.pbf?' + qs(), {
-    minZoom: 9, maxZoom: 20, interactive: true, rendererFactory: L.canvas.tile, pane: 'points',
+    minZoom: CLUSTER_ZOOM, maxZoom: 20, interactive: true, rendererFactory: L.canvas.tile, pane: 'points',
     getFeatureId: f => f.properties.kobo_id,
     vectorTileLayerStyles: { points: (p, z) => ({
       radius: z >= 14 ? 5 : z >= 12 ? 3.5 : 2.5,
@@ -239,7 +266,7 @@ async function makeHeat(metric){
 function rebuildPoints(){
   if (pointsLayer) map.removeLayer(pointsLayer);
   pointsLayer = makePoints();
-  if (document.getElementById('L-points').checked) pointsLayer.addTo(map);
+  syncPointLayers();
 }
 
 async function showPoint(id, latlng){
@@ -285,7 +312,7 @@ legendEl.innerHTML = `
   <div class="row" style="margin-bottom:6px"><b>Basemap</b>
     <label style="margin-left:6px"><input type="radio" name="bm" value="streets" checked> streets</label>
     <label><input type="radio" name="bm" value="sat"> satellite</label></div>
-  <label><input type="checkbox" id="L-points" checked> <b>Points</b> <span style="color:var(--muted)">(zoom ≥ 9)</span></label>
+  <label><input type="checkbox" id="L-points" checked> <b>Points</b> <span style="color:var(--muted)">(clustered below zoom ${CLUSTER_ZOOM})</span></label>
   ${Object.keys(FLAG_COLOR).map(f => `<div class="row"><span class="sw" style="background:${FLAG_COLOR[f]}"></span>${FLAG_LABEL[f]}</div>`).join('')}
   <label style="margin-top:8px"><input type="checkbox" id="L-hex" checked> <b>Density hexes</b> (1 km)</label>
   <div class="ramp">${SEQ.map(c => `<i style="background:${c}"></i>`).join('')}</div>
@@ -295,7 +322,7 @@ legendEl.innerHTML = `
   <label style="margin-top:6px"><input type="checkbox" id="L-polys" checked> <b>Digitised polygons</b> <span id="polycount" style="color:var(--muted)"></span></label>
   <div class="row" style="color:var(--muted)"><span class="sw" style="background:var(--c-clean);box-shadow:0 0 0 2px #ff2a2a"></span>point with a polygon (red ring)</div>`;
 L.DomEvent.disableClickPropagation(legendEl); L.DomEvent.disableScrollPropagation(legendEl);
-legendEl.querySelector('#L-points').onchange = e => e.target.checked ? pointsLayer.addTo(map) : map.removeLayer(pointsLayer);
+legendEl.querySelector('#L-points').onchange = () => syncPointLayers();
 legendEl.querySelector('#L-hex').onchange = e => e.target.checked ? hexLayer.addTo(map) : map.removeLayer(hexLayer);
 legendEl.querySelector('#L-counties').onchange = e => e.target.checked ? countiesLayer.addTo(map) : map.removeLayer(countiesLayer);
 legendEl.querySelector('#L-polys').onchange = e => polyLayer && (e.target.checked ? polyLayer.addTo(map) : map.removeLayer(polyLayer));
@@ -333,8 +360,9 @@ legendEl.querySelector('#L-heat').onchange = toggleHeat;
 legendEl.querySelector('#heat-metric').onchange = toggleHeat;
 
 const hint = L.DomUtil.create('div', 'panel', map.getContainer()); hint.id = 'zoomhint';
-function updHint(){ const z = map.getZoom(); hint.textContent = z < 9 ? `zoom ${z} — zoom in to 9+ to see individual points` : `zoom ${z}`; }
-map.on('zoomend', updHint); updHint();
+function updHint(){ const z = map.getZoom();
+  hint.textContent = z < CLUSTER_ZOOM ? `zoom ${z} — grouped counts; zoom to ${CLUSTER_ZOOM} for individual points` : `zoom ${z}`; }
+map.on('zoomend', () => { updHint(); syncPointLayers(); }); updHint();
 
 // ------------------------------------------------------------------ sidebar
 function syncFlagBars(){ document.querySelectorAll('#flagbars .lab').forEach(el => el.classList.toggle('on', el.dataset.flag === filters.flag)); }
@@ -462,8 +490,16 @@ function connectLive(){
   es.addEventListener('change', async e => {
     const d = JSON.parse(e.data); const when = new Date().toLocaleTimeString();
     setLive('busy', 'updating…');
-    if (d.tables.includes('digitized_polygon')) { await loadPolygons(); loadProgress(); loadHistory(); toast(`Digitised polygons updated (${when})`); }
-    if (d.tables.includes('farm_point_qc') || d.tables.includes('farm_point_hex')) {
+    // a digitiser saving a polygon ('digitized_polygon' + the 'farm_point_track'
+    // stamp on the points it covers) only refreshes the polygons and the
+    // progress figures. A QC rebuild is the heavy case and reloads everything.
+    const polyOnly = (d.tables.includes('digitized_polygon') || d.tables.includes('farm_point_track'))
+                     && !d.tables.includes('farm_point_qc') && !d.tables.includes('farm_point_hex');
+    if (d.tables.includes('digitized_polygon') || d.tables.includes('farm_point_track')) {
+      await loadPolygons(); loadProgress(); loadHistory();
+      if (!polyOnly) toast(`Digitised polygons updated (${when})`);
+    }
+    if (!polyOnly) {
       rebuildPoints(); hexLayer.redraw(); await loadSidebar();
       if (heatLayer) toggleHeat();
       toast(`QC results updated (${when})`);
@@ -473,16 +509,25 @@ function connectLive(){
   es.onerror = () => setLive('', 'reconnecting…');   // EventSource retries by itself
 }
 
+// Start-up is staged so the map is usable immediately: tiles first (they are
+// served from the tile cache), then the polygons, then the sidebar figures,
+// and finally the heavier tables. Nothing waits on anything it does not need.
 async function init(){
-  await addBasemap();
-  const gj = await (await fetch('/api/counties')).json();
-  countiesLayer = L.geoJSON(gj, { style: f => ({ color: f.properties.target ? '#52514e' : '#c3c2b7', weight: f.properties.target ? 1.2 : 0.8, fill: true, fillOpacity: f.properties.target ? 0 : 0.06, fillColor: '#898781', dashArray: f.properties.target ? null : '3 3' }),
-    onEachFeature: (f, l) => l.bindTooltip(`${f.properties.name}: ${fmt(f.properties.n)} points, ${fmt(f.properties.n_clean)} clean${f.properties.target ? '' : ' — not in target list'}`, { sticky: true }) }).addTo(map);
   hexLayer = makeHex('n_all').addTo(map);
-  pointsLayer = makePoints().addTo(map);
-  loadPolygons();
+  pointsLayer = makePoints();
+  clusterLayer = makeClusters();
+  syncPointLayers();
   connectLive();
-  loadSidebar();
+  addBasemap();                       // not awaited: the data layers draw first
+
+  requestAnimationFrame(async () => {
+    loadPolygons();
+    const gj = await (await fetch('/api/counties')).json();
+    countiesLayer = L.geoJSON(gj, { style: f => ({ color: f.properties.target ? '#52514e' : '#c3c2b7', weight: f.properties.target ? 1.2 : 0.8, fill: true, fillOpacity: f.properties.target ? 0 : 0.06, fillColor: '#898781', dashArray: f.properties.target ? null : '3 3' }),
+      onEachFeature: (f, l) => l.bindTooltip(`${f.properties.name}: ${fmt(f.properties.n)} points, ${fmt(f.properties.n_clean)} clean${f.properties.target ? '' : ' — not in target list'}`, { sticky: true }) });
+    if (legendEl.querySelector('#L-counties').checked) countiesLayer.addTo(map);
+    loadSidebar();
+  });
 }
 init();
 </script>

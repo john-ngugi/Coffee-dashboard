@@ -18,6 +18,7 @@ Usage:  python build_qc.py            # full rebuild (~10 min)
         python build_qc.py --flags    # re-apply CRITERIA only (~3 min)
         python build_qc.py --hex      # rebuild the heatmap grid only
         python build_qc.py --area     # recompute implied_ha, then flags + hex
+        python build_qc.py --stats    # refresh the dashboard's cached stats only
 """
 import os, sys, time
 from pathlib import Path
@@ -363,11 +364,16 @@ def report(cur):
 
 
 if __name__ == "__main__":
+    stats_only = "--stats" in sys.argv
     flags_only = "--flags" in sys.argv
     hex_only = "--hex" in sys.argv
     area_only = "--area" in sys.argv
     conn = connect(); cur = conn.cursor()
     t0 = time.time()
+    if stats_only:
+        run(cur, "tile table + cached stats",
+            "SELECT coffee.rebuild_point_tile(); SELECT coffee.refresh_stats()")
+        print(f"\nDONE in {time.time()-t0:.0f}s"); raise SystemExit
     if not flags_only and not hex_only and not area_only:
         print("1. copy");    stage_copy(cur)
         print("2. county");  stage_county(cur)
@@ -378,5 +384,10 @@ if __name__ == "__main__":
     if not hex_only:
         print("5. flags");   stage_flags(cur, CRITERIA)
     print("6. hex");     stage_hex(cur)
+    # the dashboard reads its figures from these, so refresh them here rather
+    # than making every page load re-scan the QC table
+    run(cur, "tile table + cached stats", """
+        SELECT coffee.rebuild_point_tile();
+        SELECT coffee.refresh_stats()""")
     report(cur)
     print(f"\nDONE in {time.time()-t0:.0f}s")

@@ -20,4 +20,8 @@ EXPOSE 5055
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5055/api/config').status==200 else 1)"
 
-CMD ["python", "dashboard.py"]
+# gthread workers: the dashboard is I/O bound (Postgres + SSE), and each worker
+# keeps its own connection pool, response cache and LISTEN thread.
+CMD ["gunicorn", "--bind", "0.0.0.0:5055", "--workers", "2", "--threads", "16", \
+     "--worker-class", "gthread", "--timeout", "120", "--graceful-timeout", "20", \
+     "--access-logfile", "-", "--error-logfile", "-", "dashboard:app"]
