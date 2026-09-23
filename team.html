@@ -124,6 +124,8 @@
             <select id="f-county"><option value="">all counties</option></select></div>
           <div class="f"><label for="f-q">Polygon name / note</label>
             <input type="search" id="f-q" placeholder="search…" style="min-width:160px"></div>
+          <div class="f"><label for="f-gid">Go to polygon #</label>
+            <input type="search" id="f-gid" placeholder="e.g. 152" style="min-width:110px"></div>
           <div class="f"><label>Quick range</label>
             <div class="chips">
               <span class="chip" data-range="today">today</span>
@@ -332,15 +334,7 @@ async function loadMap(fit){
                    fillOpacity: f.properties.flagged ? 0.35 : 0.15 }),
     onEachFeature: (f, l) => { const p = f.properties;
       l.bindTooltip(`#${p.gid}${p.name ? ' · ' + p.name : ''} — ${p.area_ha} ha<br>${p.by_name} · ${p.at}`, { sticky: true });
-      l.on('click', () => L.popup({ maxWidth: 320 }).setLatLng(l.getBounds().getCenter()).setContent(
-        `<b>Polygon #${p.gid}</b>${p.flagged ? ' <span class="pill" style="color:var(--red)">flagged</span>' : ''}<dl>
-          <dt>digitised by</dt><dd>${p.by_name}</dd>
-          <dt>when</dt><dd>${p.at}</dd>
-          <dt>county</dt><dd>${p.county || '–'}</dd>
-          <dt>area</dt><dd>${p.area_ha} ha</dd>
-          <dt>survey points</dt><dd>${fmt(p.n)} (${fmt(p.n_clean)} clean)</dd>
-          <dt>name</dt><dd>${p.name || '–'}</dd></dl>
-         <a href="/?poly=${p.gid}" target="_blank">open in the map dashboard</a>`).openOn(tmap)); }
+      l.on('click', () => openPolygonPopup(p.gid, l.getBounds().getCenter())); }
   }).addTo(tmap);
 
   if (fit && gj.features.length) {
@@ -384,10 +378,69 @@ function renderMapSide(s, gj){
     || '<div style="color:var(--muted);grid-column:1/-1">nothing in range</div>';
 }
 
+// The popup is the review surface: it shows what the polygon is, who last
+// changed it, and lets a supervisor flag or undo that change without leaving
+// the map. The buttons act on the latest history entry, exactly as the tables do.
+const OP_LABEL = { insert: 'drawn', update: 'edited', delete: 'deleted' };
+
+async function openPolygonPopup(gid, latlng){
+  const pop = L.popup({ maxWidth: 360, minWidth: 300 }).setLatLng(latlng)
+    .setContent('<b>Polygon #' + gid + '</b><p class="note">loading…</p>').openOn(tmap);
+  let d;
+  try { d = await api('/api/team/polygon/' + gid); }
+  catch (e) { pop.setContent(`<b>Polygon #${gid}</b><p class="note">${e.message}</p>`); return; }
+
+  const last = d.history.find(h => !h.undone && !h.is_undo);
+  const rows = [['digitised by', d.by_name], ['when', d.at], ['county', d.county || '–'],
+                ['area', d.area_ha + ' ha'],
+                ['survey points', `${fmt(d.n)} (${fmt(d.n_clean)} clean, ${fmt(d.trees_clean)} trees)`],
+                ['name', d.name || '–'], ['notes', d.notes || '–']];
+  const hist = d.history.slice(0, 4).map(h =>
+    `<div class="${h.undone ? 'undone' : ''}" style="font-size:11px;color:var(--ink-2)">
+       ${h.at.slice(5)} · ${OP_LABEL[h.op] || h.op} by ${h.by_name}
+       ${h.flagged ? `<span class="pill" style="color:var(--red)">flagged${h.note ? ': ' + h.note : ''}</span>` : ''}
+       ${h.undone ? '<span class="pill">undone</span>' : ''}</div>`).join('');
+
+  const actions = !last ? '<span class="note">no change to act on</span>' : `
+    ${last.flagged ? '<span class="pill" style="color:var(--red)">already flagged</span>'
+                   : `<button class="sm" data-pop-flag="${last.id}">flag this change</button>`}
+    ${d.can_undo ? `<button class="sm danger" data-pop-undo="${last.id}">undo</button>` : ''}`;
+
+  pop.setContent(`<b>Polygon #${d.gid}</b>
+    <dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+    <div style="margin:6px 0 4px">${hist}</div>
+    <div style="display:flex;gap:6px;align-items:center;margin-top:6px">${actions}</div>
+    <div style="margin-top:6px"><a href="/?poly=${d.gid}" target="_blank">open in the map dashboard</a></div>`);
+
+  const root = pop.getElement();
+  root.querySelectorAll('[data-pop-flag]').forEach(b => b.onclick = async () => {
+    const note = prompt('Why is this change wrong? (optional)'); if (note === null) return;
+    try { await api('/api/team/action', { what: 'flag', id: +b.dataset.popFlag, note });
+          toast('flagged'); tmap.closePopup(); refresh(); }
+    catch (e) { toast(e.message); } });
+  root.querySelectorAll('[data-pop-undo]').forEach(b => b.onclick = async () => {
+    if (!confirm(`Undo the last change to polygon #${d.gid}? It goes back to how it was before.`)) return;
+    try { await api('/api/team/action', { what: 'undo', id: +b.dataset.popUndo });
+          toast('undone'); tmap.closePopup(); refresh(); }
+    catch (e) { toast(e.message); } });
+}
+
+// "Go to polygon #" -- finds it whatever the filters say, and opens its popup
+async function gotoPolygon(gid){
+  if (!gid) return;
+  let d;
+  try { d = await api('/api/team/polygon/' + gid); }
+  catch (e) { toast(`Polygon #${gid}: ${e.message}`); return; }
+  tmap.setView([d.lat, d.lon], 17);
+  openPolygonPopup(gid, L.latLng(d.lat, d.lon));
+}
+
 function wireMapFilters(){
   const reload = fit => { clearTimeout(mapTimer); mapTimer = setTimeout(() => loadMap(fit), 200); };
   ['#f-who', '#f-from', '#f-to', '#f-county'].forEach(sel => $(sel).onchange = () => reload(true));
   $('#f-q').oninput = () => reload(false);
+  $('#f-gid').onkeydown = e => { if (e.key === 'Enter') gotoPolygon(+e.target.value.replace(/\D/g, '')); };
+  $('#f-gid').onsearch = e => gotoPolygon(+e.target.value.replace(/\D/g, ''));
   $('#f-flagged').onclick = e => {
     const on = e.target.dataset.flagged === '1';
     e.target.dataset.flagged = on ? '0' : '1'; e.target.classList.toggle('on', !on); reload(true);
@@ -405,6 +458,7 @@ function wireMapFilters(){
   $('#f-reset').onclick = () => {
     $('#f-who').value = ''; $('#f-county').value = ''; $('#f-q').value = '';
     $('#f-from').value = ''; $('#f-to').value = '';
+    $('#f-gid').value = '';
     $('#f-flagged').dataset.flagged = '0'; $('#f-flagged').classList.remove('on');
     document.querySelectorAll('.chip[data-range]').forEach(c => c.classList.remove('on'));
     loadMap(true);

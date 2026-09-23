@@ -769,6 +769,37 @@ def team_map_summary():
     ))
 
 
+@app.get("/api/team/polygon/<int:gid>")
+def team_polygon(gid):
+    """One polygon with its recent history -- what the map popup shows, and
+    what the flag / undo buttons there act on."""
+    me = team_user()
+    row = query("""SELECT d.gid, d.created_by, coalesce(m.full_name, d.created_by), d.created_at,
+                          d.name, d.notes, d.county, d.area_ha, d.n_points, d.n_clean, d.trees_clean,
+                          ST_Y(ST_Centroid(d.geom)), ST_X(ST_Centroid(d.geom))
+                   FROM coffee.digitized_polygon d
+                   LEFT JOIN coffee.team_member m ON m.login = d.created_by
+                   WHERE d.gid = %s""", (gid,), one=True)
+    if not row:
+        return jsonify(error="no such polygon"), 404
+    if not me["sees_all"] and row[1] not in visible_logins(me):
+        abort(403)
+    hist = query("""SELECT a.hist_id, a.op, a.changed_at, a.changed_by,
+                           coalesce(m.full_name, a.changed_by), a.flagged, a.flag_note,
+                           a.flagged_by, a.undone, a.undoes IS NOT NULL
+                    FROM coffee.digitized_polygon_activity a
+                    LEFT JOIN coffee.team_member m ON m.login = a.changed_by
+                    WHERE a.gid = %s ORDER BY a.hist_id DESC LIMIT 10""", (gid,))
+    return jsonify(dict(
+        gid=row[0], by=row[1], by_name=row[2], at=str(row[3])[:16], name=row[4], notes=row[5],
+        county=row[6], area_ha=float(row[7] or 0), n=row[8], n_clean=row[9],
+        trees_clean=int(row[10] or 0), lat=row[11], lon=row[12],
+        can_undo=me["can_undo"],
+        history=[dict(id=h, op=op, at=str(at)[:16], by=by, by_name=bn, flagged=f, note=note,
+                      flagged_by=fb, undone=u, is_undo=iu)
+                 for h, op, at, by, bn, f, note, fb, u, iu in hist]))
+
+
 @app.get("/api/team/map/options")
 def team_map_options():
     """What the filter dropdowns should offer this user."""
